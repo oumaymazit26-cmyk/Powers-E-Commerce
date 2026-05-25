@@ -206,3 +206,30 @@ INSERT INTO categories (name, slug, description, parent_id, level, sort_order) V
 INSERT INTO users (username, email, password_hash, role, is_suspended) VALUES
 ('admin', 'admin@powers.com', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/X4.VTtYA.qGZvKG6G', 'admin', FALSE);
 -- Mot de passe: admin123 (hash généré par Werkzeug)
+-- ============================================================
+-- TABLE contact_messages (Messages du formulaire web)
+-- À exécuter dans MySQL après avoir créé la base powers_db
+-- ============================================================
+
+USE powers_db;
+
+CREATE TABLE IF NOT EXISTS contact_messages (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(120) NOT NULL,
+    phone VARCHAR(30),
+    subject VARCHAR(200),
+    message TEXT NOT NULL,
+    product VARCHAR(200),
+    quantity VARCHAR(50),
+    source VARCHAR(50) DEFAULT 'website',
+    is_read BOOLEAN DEFAULT FALSE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_email (email),
+    INDEX idx_created (created_at),
+    INDEX idx_read (is_read),
+    INDEX idx_source (source)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Vérification
+SELECT 'Table contact_messages créée avec succès' AS status;            
