@@ -784,37 +784,85 @@ def register():
 
 @app.route('/api/contact', methods=['POST'])
 def receive_contact():
-    """Reçoit les soumissions du formulaire de devis du site web
+    """Reçoit les soumissions du formulaire de devis - accepte tout format"""
+    data = {}
+    
+    # Essaie JSON d'abord
+    if request.is_json:
+        data = request.get_json()
+    # Sinon Form Data
+    elif request.form:
+        data = request.form.to_dict()
+    # Sinon query params
+    elif request.args:
+        data = request.args.to_dict()
+    # Sinon raw body
+    else:
+        try:
+            data = request.get_json(force=True)
+        except:
+            data = {}
 
-    Cette route est appelée par HookSure (WordPress) ou tout autre webhook.
-    Pas besoin d'authentification - sécurisée par clé secrète optionnelle.
-    """
-    data = request.get_json() or request.form.to_dict()
+    # Debug: log toutes les clés reçues
+    print("📨 Données reçues:", data)
+    print("📨 Clés:", list(data.keys()))
 
-    # Vérification clé secrète optionnelle (sécurité basique)
+    # Vérification clé secrète optionnelle
     secret = data.get('secret', '')
     expected_secret = os.environ.get('CONTACT_SECRET', '')
     if expected_secret and secret != expected_secret:
         return jsonify({'success': False, 'message': 'Clé secrète invalide'}), 403
 
-    if not data.get('email') or not data.get('message'):
-        return jsonify({'success': False, 'message': 'Email et message requis'}), 400
+    # Fonction helper pour trouver une valeur parmi plusieurs clés possibles
+    def find_value(*keys):
+        for key in keys:
+            if key in data and data[key]:
+                return data[key]
+        # Cherche aussi dans les clés qui contiennent le mot
+        for k, v in data.items():
+            for key in keys:
+                if key in k and v:
+                    return v
+        return ''
+
+    # Extraction des champs
+    name = find_value('name', 'nom', 'sureforms_name', 'srfm-name')
+    email = find_value('email', 'e-mail', 'sureforms_email', 'srfm-email', 'srfm-sender-email-field')
+    phone = find_value('phone', 'telephone', 'tel', 'sureforms_phone', 'srfm-phone')
+    message = find_value('message', 'msg', 'details', 'sureforms_message', 'srfm-message')
+    product = find_value('product', 'produit', 'sureforms_product', 'srfm-product', 'embed_post_title')
+    quantity = find_value('quantity', 'quantite', 'qty', 'sureforms_quantity', 'srfm-quantity')
+
+    # Valeurs par défaut
+    name = name or 'Anonyme'
+    email = email or ''
+    message = message or ''
+
+    if not email:
+        return jsonify({'success': False, 'message': 'Email requis'}), 400
 
     msg = ContactMessage(
-        name=data.get('name', 'Anonyme'),
-        email=data.get('email'),
-        phone=data.get('phone'),
-        subject=data.get('subject', 'Demande de devis'),
-        message=data.get('message'),
-        product=data.get('product'),
-        quantity=data.get('quantity'),
+        name=name,
+        email=email,
+        phone=phone,
+        subject='Demande de devis',
+        message=message,
+        product=product,
+        quantity=quantity,
         source=data.get('source', 'website')
     )
     db.session.add(msg)
     db.session.commit()
 
-    # Envoi simultané de l'email à comercial@technoclim.ma
-    email_sent = send_contact_email(data)
+    # Envoi email (si SMTP configuré)
+    email_sent = False
+    try:
+        email_sent = send_contact_email({
+            'name': name, 'email': email, 'phone': phone,
+            'message': message, 'product': product, 'quantity': quantity
+        })
+    except Exception as e:
+        print(f"⚠️ Erreur email: {e}")
 
     return jsonify({
         'success': True,
@@ -822,7 +870,6 @@ def receive_contact():
         'id': msg.id,
         'email_sent': email_sent
     }), 201
-
 
 @app.route('/api/contact', methods=['GET'])
 @require_auth
