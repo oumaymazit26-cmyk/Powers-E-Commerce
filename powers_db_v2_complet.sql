@@ -232,4 +232,21 @@ CREATE TABLE IF NOT EXISTS contact_messages (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Vérification
-SELECT 'Table contact_messages créée avec succès' AS status;            
+SELECT 'Table contact_messages créée avec succès' AS status; 
+-- Ajouter colonne
+ALTER TABLE contact_messages 
+ADD COLUMN message_type VARCHAR(20) DEFAULT 'devis';
+
+-- Index
+CREATE INDEX idx_msg_type 
+ON contact_messages(message_type);
+
+-- Messages devis
+UPDATE contact_messages 
+SET message_type = 'devis' 
+WHERE product IS NOT NULL AND product != '';
+
+-- Messages service
+UPDATE contact_messages 
+SET message_type = 'service' 
+WHERE service IS NOT NULL AND service != '';           
