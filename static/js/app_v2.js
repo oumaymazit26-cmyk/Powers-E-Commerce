@@ -9,6 +9,8 @@ let currentProductPage = 1;
 let currentAuditPage = 1;
 let currentArchivePage = 1;
 let showingArchived = false;
+let currentMessageFilter = 'all';
+let currentMessagePage = 1;
 
 /* ==================== AUTH & PERMISSIONS ==================== */
 function getAuthHeaders() {
@@ -22,7 +24,6 @@ function hasPermission(perm) {
 }
 
 function applyPermissions() {
-    // Masquer/afficher les éléments selon les permissions
     const adminOnly = document.querySelectorAll('.admin-only');
     if (hasPermission('user:create')) {
         adminOnly.forEach(el => el.style.display = '');
@@ -121,6 +122,7 @@ function switchView(view) {
     if (view === 'archive') { showingArchived = true; loadArchive(); }
     if (view === 'users') loadUsers();
     if (view === 'audit') loadAuditLogs();
+    if (view === 'messages') { currentMessageFilter = 'all'; loadMessages(); }
 }
 
 function initApp() {
@@ -131,7 +133,6 @@ function initApp() {
 }
 
 async function checkWpStatus() {
-    // On vérifie indirectement via les stats si WP est configuré
     const badge = document.getElementById('wp-status-badge');
     const text = document.getElementById('wp-status-text');
     try {
@@ -502,7 +503,6 @@ document.getElementById('product-form').addEventListener('submit', async (e) => 
     const form = document.getElementById('product-form');
     const formData = new FormData(form);
 
-    // Add attributes JSON
     const attrs = currentAttributes.map(a => ({
         name: a.name,
         slug: a.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''),
@@ -512,7 +512,6 @@ document.getElementById('product-form').addEventListener('submit', async (e) => 
     })).filter(a => a.name && a.options.length > 0);
     formData.set('attributes', JSON.stringify(attrs));
 
-    // Add variations JSON
     const vars = currentVariations.map(v => ({
         sku: v.sku,
         regular_price: v.regular_price,
@@ -541,7 +540,9 @@ document.getElementById('product-form').addEventListener('submit', async (e) => 
         }
     } catch (e) { 
         console.error('Save product error:', e);
-        toast('Erreur lors de l\'enregistrement', 'error');
+       
+    toast('Erreur lors de l\'enregistrement', 'error');
+
     }
 });
 
@@ -1117,10 +1118,13 @@ async function loadAuditLogs(page=1) {
     } catch (e) { console.error('Audit error:', e); }
 }
 
-
-
 /* ==================== MESSAGES / CONTACT ==================== */
-let currentMessagePage = 1;
+function filterMessages(type, btn) {
+    currentMessageFilter = type;
+    document.querySelectorAll('.msg-type-tab').forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+    loadMessages(1);
+}
 
 async function loadMessageStats() {
     try {
@@ -1143,7 +1147,9 @@ async function loadMessages(page=1) {
     const params = new URLSearchParams({ page, per_page: 15 });
     const filter = document.getElementById('msg-filter')?.value || '';
     const search = document.getElementById('msg-search')?.value || '';
+    
     if (filter === 'unread') params.append('unread', 'true');
+    if (currentMessageFilter !== 'all') params.append('message_type', currentMessageFilter);
 
     try {
         const res = await fetch(`${API}/api/contact?${params}`, { headers: getAuthHeaders() });
@@ -1152,26 +1158,33 @@ async function loadMessages(page=1) {
         tbody.innerHTML = '';
 
         if (data.success) {
-            // Stats dans la vue
+            // Stats
             const statsRes = await fetch(`${API}/api/contact/stats`, { headers: getAuthHeaders() });
             const statsData = await statsRes.json();
             if (statsData.success) {
                 document.getElementById('msg-total').textContent = statsData.data.total;
+                document.getElementById('msg-devis').textContent = statsData.data.devis;
+                document.getElementById('msg-service').textContent = statsData.data.service;
                 document.getElementById('msg-unread').textContent = statsData.data.unread;
                 document.getElementById('msg-today').textContent = statsData.data.today;
+                
+                document.getElementById('tab-count-all').textContent = statsData.data.total;
+                document.getElementById('tab-count-devis').textContent = statsData.data.devis;
+                document.getElementById('tab-count-service').textContent = statsData.data.service;
+                
                 const statsText = document.getElementById('msg-stats');
                 if (statsText) statsText.textContent = `${statsData.data.unread} non lu(s)`;
             }
-            loadMessageStats(); // Mettre à jour le badge sidebar
+            loadMessageStats();
 
             if (data.data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="8" class="empty-msg">Aucun message</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="9" class="empty-msg">Aucun message</td></tr>';
             } else {
                 data.data.forEach(m => {
                     const tr = document.createElement('tr');
-                    if (!m.is_read) tr.style.fontWeight = '600';
-                    tr.style.background = m.is_read ? '' : 'rgba(37,99,235,0.03)';
-
+                    tr.className = m.message_type === 'service' ? 'msg-row-service' : 'msg-row-devis';
+                    if (!m.is_read) tr.classList.add('msg-row-unread');
+                    
                     const dateStr = new Date(m.created_at).toLocaleString('fr-FR', {
                         day: '2-digit', month: '2-digit', year: 'numeric',
                         hour: '2-digit', minute: '2-digit'
@@ -1181,7 +1194,12 @@ async function loadMessages(page=1) {
                         ? '<i class="fas fa-envelope-open" style="color:var(--gray-400)"></i>'
                         : '<i class="fas fa-envelope" style="color:var(--primary)"></i>';
 
-                    const productInfo = m.product || m.subject || '-';
+                    const typeBadge = m.message_type === 'service'
+                        ? '<span class="badge badge-service"><i class="fas fa-tools"></i> Service</span>'
+                        : '<span class="badge badge-devis"><i class="fas fa-file-invoice"></i> Devis</span>';
+
+                    const productInfo = m.service || m.product || m.subject || '-';
+                    const extraInfo = m.quantity ? `<small style="color:var(--gray-500)">Qté: ${m.quantity}</small>` : '';
 
                     let actions = '';
                     if (!m.is_read) {
@@ -1191,11 +1209,12 @@ async function loadMessages(page=1) {
 
                     tr.innerHTML = `
                         <td style="text-align:center">${readIcon}</td>
+                        <td>${typeBadge}</td>
                         <td style="white-space:nowrap;font-size:13px">${dateStr}</td>
                         <td><strong>${m.name}</strong></td>
                         <td><a href="mailto:${m.email}">${m.email}</a></td>
                         <td>${m.phone || '-'}</td>
-                        <td><span class="badge badge-info">${productInfo}</span> ${m.quantity ? `<small style="color:var(--gray-500)">Qté: ${m.quantity}</small>` : ''}</td>
+                        <td><span class="badge badge-info">${productInfo}</span> ${extraInfo}</td>
                         <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis" title="${m.message.replace(/"/g, '&quot;')}">${m.message}</td>
                         <td><div class="action-btns">${actions}</div></td>
                     `;

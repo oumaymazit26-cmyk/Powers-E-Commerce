@@ -30,15 +30,7 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'powers-ecommerce-secret-key-2024')
 
 # --- CONFIGURATION BASE DE DONNÉES ---
-# Option 1: SQLite (Gratuit, parfait pour Render débutant)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///powers_db.sqlite3')
-
-# Option 2: MySQL (Production - décommentez si vous avez un serveur MySQL)
-# DB_USER = os.environ.get('DB_USER', 'root')
-# DB_PASSWORD = os.environ.get('DB_PASSWORD', 'qwertyuiop123')
-# DB_HOST = os.environ.get('DB_HOST', 'localhost')
-# DB_NAME = os.environ.get('DB_NAME', 'powers_db')
-# app.config['SQLALCHEMY_DATABASE_URI'] = f'mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME}?charset=utf8mb4'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'pool_size': 10,
@@ -152,7 +144,6 @@ def get_current_user():
     if not auth_header.startswith('Bearer '):
         return None
     token = auth_header.split(' ')[1]
-    # Format: fake-jwt-token-{user_id}
     try:
         user_id = int(token.split('-')[-1])
         user = User.query.get(user_id)
@@ -322,23 +313,18 @@ class Product(db.Model):
     gallery = db.Column(db.Text)
     category_id = db.Column(db.Integer, db.ForeignKey('categories.id'))
     tags = db.Column(db.String(255))
-    status = db.Column(db.String(20), default='draft')  # draft, active, inactive, archived
-
+    status = db.Column(db.String(20), default='draft')
     product_type = db.Column(db.String(20), default='simple')
     brand = db.Column(db.String(100))
     attributes = db.Column(db.Text)
     variations = db.Column(db.Text)
-
     featured = db.Column(db.Boolean, default=False)
     meta_title = db.Column(db.String(200))
     meta_description = db.Column(db.String(500))
-
-    # Draft vs Live
-    wp_sync_status = db.Column(db.String(20), default='local')  # local, synced, failed
+    wp_sync_status = db.Column(db.String(20), default='local')
     wp_product_id = db.Column(db.Integer, nullable=True)
     scheduled_publish_at = db.Column(db.DateTime, nullable=True)
     archived = db.Column(db.Boolean, default=False)
-
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -379,8 +365,6 @@ class Product(db.Model):
         }
 
 
-
-
 class ContactMessage(db.Model):
     __tablename__ = 'contact_messages'
     id = db.Column(db.Integer, primary_key=True)
@@ -391,6 +375,8 @@ class ContactMessage(db.Model):
     message = db.Column(db.Text, nullable=False)
     product = db.Column(db.String(200))
     quantity = db.Column(db.String(50))
+    service = db.Column(db.String(200))
+    message_type = db.Column(db.String(20), default='devis')
     source = db.Column(db.String(50), default='website')
     is_read = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -405,6 +391,8 @@ class ContactMessage(db.Model):
             'message': self.message,
             'product': self.product,
             'quantity': self.quantity,
+            'service': self.service,
+            'message_type': self.message_type,
             'source': self.source,
             'is_read': self.is_read,
             'created_at': self.created_at.isoformat() if self.created_at else None
@@ -476,7 +464,6 @@ def sync_product_to_wordpress(product):
         if product.tags:
             data["tags"] = [{"name": tag.strip()} for tag in product.tags.split(',') if tag.strip()]
 
-        # Marque → Attribut + MetaData
         if product.brand:
             data["attributes"].append({
                 "name": "Marque",
@@ -488,7 +475,6 @@ def sync_product_to_wordpress(product):
             })
             data["meta_data"].append({"key": "_product_brand", "value": product.brand})
 
-        # Attributs pour produits variables
         if product.attributes and ptype == 'variable':
             try:
                 attrs = json.loads(product.attributes) if isinstance(product.attributes, str) else product.attributes
@@ -504,7 +490,6 @@ def sync_product_to_wordpress(product):
             except Exception as e:
                 print(f"⚠️ Erreur parsing attributs: {e}")
 
-        # Catégorie
         if product.category:
             cat_name = product.category.name
             cat_res = wcapi.get("products/categories", params={"search": cat_name, "per_page": 100})
@@ -521,7 +506,6 @@ def sync_product_to_wordpress(product):
                     if new_cat.status_code == 201:
                         data["categories"] = [{"id": new_cat.json()["id"]}]
 
-        # Images
         base_url = get_public_base_url()
         if base_url and product.image:
             data["images"].append({"src": f"{base_url}/uploads/{product.image}", "position": 0})
@@ -535,7 +519,6 @@ def sync_product_to_wordpress(product):
                         "position": idx + 1
                     })
 
-        # Envoi produit parent
         if existing_id:
             res = wcapi.put(f"products/{existing_id}", data)
             wp_product = res.json() if res.status_code in (200, 201) else None
@@ -557,7 +540,6 @@ def sync_product_to_wordpress(product):
         db.session.commit()
         print(f"🔄 Produit WooCommerce {action} (ID: {parent_id})")
 
-        # Sync variations si produit variable
         if ptype == 'variable' and product.variations:
             sync_variations_to_wc(product, parent_id)
 
@@ -676,6 +658,7 @@ def send_contact_email(data):
         📞 Téléphone: {data.get('phone', 'Non renseigné')}
         📦 Produit: {data.get('product', 'Non renseigné')}
         🔢 Quantité: {data.get('quantity', 'Non renseignée')}
+        🔧 Service: {data.get('service', 'Non renseigné')}
         ───────────────────────────────
 
         💬 Message:
@@ -787,53 +770,45 @@ def receive_contact():
     """Reçoit les soumissions du formulaire de devis - accepte tout format"""
     data = {}
     
-    # Essaie JSON d'abord
     if request.is_json:
         data = request.get_json()
-    # Sinon Form Data
     elif request.form:
         data = request.form.to_dict()
-    # Sinon query params
     elif request.args:
         data = request.args.to_dict()
-    # Sinon raw body
     else:
         try:
             data = request.get_json(force=True)
         except:
             data = {}
 
-    # Debug: log toutes les clés reçues
     print("📨 Données reçues:", data)
     print("📨 Clés:", list(data.keys()))
 
-    # Vérification clé secrète optionnelle
     secret = data.get('secret', '')
     expected_secret = os.environ.get('CONTACT_SECRET', '')
     if expected_secret and secret != expected_secret:
         return jsonify({'success': False, 'message': 'Clé secrète invalide'}), 403
 
-    # Fonction helper pour trouver une valeur parmi plusieurs clés possibles
     def find_value(*keys):
         for key in keys:
             if key in data and data[key]:
                 return data[key]
-        # Cherche aussi dans les clés qui contiennent le mot
         for k, v in data.items():
             for key in keys:
                 if key in k and v:
                     return v
         return ''
 
-    # Extraction des champs
     name = find_value('name', 'nom', 'sureforms_name', 'srfm-name')
     email = find_value('email', 'e-mail', 'sureforms_email', 'srfm-email', 'srfm-sender-email-field')
     phone = find_value('phone', 'telephone', 'tel', 'sureforms_phone', 'srfm-phone')
     message = find_value('message', 'msg', 'details', 'sureforms_message', 'srfm-message')
     product = find_value('product', 'produit', 'sureforms_product', 'srfm-product', 'embed_post_title')
     quantity = find_value('quantity', 'quantite', 'qty', 'sureforms_quantity', 'srfm-quantity')
+    service = find_value('service', 'service_type', 'sureforms_service', 'srfm-service')
+    message_type = find_value('message_type', 'type', 'msg_type')
 
-    # Valeurs par défaut
     name = name or 'Anonyme'
     email = email or ''
     message = message or ''
@@ -841,25 +816,36 @@ def receive_contact():
     if not email:
         return jsonify({'success': False, 'message': 'Email requis'}), 400
 
+    # Détection auto du type si non fourni
+    if not message_type:
+        if service and not product:
+            message_type = 'service'
+        elif product:
+            message_type = 'devis'
+        else:
+            message_type = 'devis'
+
     msg = ContactMessage(
         name=name,
         email=email,
         phone=phone,
-        subject='Demande de devis',
+        subject=data.get('subject', 'Demande de ' + message_type),
         message=message,
         product=product,
         quantity=quantity,
+        service=service,
+        message_type=message_type,
         source=data.get('source', 'website')
     )
     db.session.add(msg)
     db.session.commit()
 
-    # Envoi email (si SMTP configuré)
     email_sent = False
     try:
         email_sent = send_contact_email({
             'name': name, 'email': email, 'phone': phone,
-            'message': message, 'product': product, 'quantity': quantity
+            'message': message, 'product': product, 'quantity': quantity,
+            'service': service, 'subject': msg.subject
         })
     except Exception as e:
         print(f"⚠️ Erreur email: {e}")
@@ -878,10 +864,13 @@ def list_contacts():
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 20, type=int)
     unread_only = request.args.get('unread', 'false').lower() == 'true'
+    message_type = request.args.get('message_type', '')
 
     query = ContactMessage.query.order_by(ContactMessage.created_at.desc())
     if unread_only:
         query = query.filter_by(is_read=False)
+    if message_type:
+        query = query.filter_by(message_type=message_type)
 
     pagination = query.paginate(page=page, per_page=per_page, error_out=False)
     return jsonify({
@@ -924,9 +913,11 @@ def contact_stats():
     today = ContactMessage.query.filter(
         db.func.date(ContactMessage.created_at) == db.func.date(datetime.utcnow())
     ).count()
+    devis = ContactMessage.query.filter_by(message_type='devis').count()
+    service = ContactMessage.query.filter_by(message_type='service').count()
     return jsonify({
         'success': True,
-        'data': {'total': total, 'unread': unread, 'today': today}
+        'data': {'total': total, 'unread': unread, 'today': today, 'devis': devis, 'service': service}
     })
 
 # ============================================================
@@ -1252,7 +1243,6 @@ def get_products():
     if archived is not None:
         query = query.filter_by(archived=bool(archived))
     else:
-        # Par défaut, ne pas montrer les archivés
         query = query.filter_by(archived=False)
 
     sort_column = getattr(Product, sort_by, Product.created_at)
@@ -1343,7 +1333,6 @@ def create_product():
         if product.category_id:
             product.category = Category.query.get(product.category_id)
 
-        # Sync WordPress uniquement si demandé ET permission
         wp_result = None
         if publish_to_wp and status == 'active':
             if '*' in ROLE_PERMISSIONS.get(g.current_user.role, []) or 'product:publish' in ROLE_PERMISSIONS.get(g.current_user.role, []):
@@ -1430,7 +1419,6 @@ def update_product(id):
         if product.category_id:
             product.category = Category.query.get(product.category_id)
 
-        # Sync WordPress
         wp_result = None
         if publish_to_wp and product.status == 'active' and not product.archived:
             if '*' in ROLE_PERMISSIONS.get(g.current_user.role, []) or 'product:publish' in ROLE_PERMISSIONS.get(g.current_user.role, []):
@@ -1704,4 +1692,3 @@ def healthz():
 if __name__ == '__main__':
     init_db()
     app.run(debug=True, host='0.0.0.0', port=5000)
-    

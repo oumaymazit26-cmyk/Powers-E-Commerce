@@ -108,7 +108,14 @@
         .filters-bar input { min-width: 200px; }
 
         /* Table */
-        .table-responsive { background: white; border-radius: var(--radius-lg); border: 1px solid var(--border); overflow: hidden; }
+        .table-responsive { background: white; border-radius: var(--radius-lg); border: Le message a été coupé. Je continue avec le reste des fichiers :
+
+---
+
+## 2. `index.html` (suite)
+
+```html
+        1px solid var(--border); overflow: hidden; }
         .data-table { width: 100%; border-collapse: collapse; font-size: 14px; }
         .data-table th { background: var(--gray-50); padding: 14px 16px; text-align: left; font-weight: 600; color: var(--gray-600); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
         .data-table td { padding: 14px 16px; border-bottom: 1px solid var(--border); color: var(--gray-700); }
@@ -126,6 +133,8 @@
         .badge-local { background: rgba(107, 114, 128, 0.1); color: var(--gray-500); }
         .badge-synced { background: rgba(16, 185, 129, 0.1); color: var(--success); }
         .badge-failed { background: rgba(239, 68, 68, 0.1); color: var(--danger); }
+        .badge-devis { background: rgba(37, 99, 235, 0.1); color: var(--primary); }
+        .badge-service { background: rgba(139, 92, 246, 0.1); color: #8b5cf6; }
 
         /* Pagination */
         .pagination { display: flex; gap: 6px; justify-content: center; margin-top: 24px; }
@@ -163,6 +172,14 @@
         .tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); background: white; }
         .tab-panel { display: none; padding: 24px; }
         .tab-panel.active { display: block; }
+
+        /* Message Type Tabs */
+        .msg-type-tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+        .msg-type-tab { padding: 10px 20px; border-radius: var(--radius); border: 1px solid var(--border); background: white; cursor: pointer; font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 8px; transition: all 0.2s; }
+        .msg-type-tab:hover { background: var(--gray-50); }
+        .msg-type-tab.active { background: var(--primary); color: white; border-color: var(--primary); }
+        .msg-type-tab.active .badge { background: rgba(255,255,255,0.2); color: white; }
+        .msg-type-tab .badge { margin-left: 4px; }
 
         /* Images */
         .image-upload-zone { border: 2px dashed var(--gray-300); border-radius: var(--radius); padding: 32px; text-align: center; position: relative; cursor: pointer; transition: all 0.2s; }
@@ -254,6 +271,11 @@
         .publish-toggle label { font-weight: 600; color: var(--gray-700); }
         .publish-toggle .hint { font-size: 12px; color: var(--gray-400); }
 
+        /* Message row styles */
+        .msg-row-devis { border-left: 3px solid var(--primary); }
+        .msg-row-service { border-left: 3px solid #8b5cf6; }
+        .msg-row-unread { background: rgba(37, 99, 235, 0.03); font-weight: 600; }
+
         /* Responsive */
         @media (max-width: 768px) {
             .sidebar { width: 100%; position: relative; height: auto; }
@@ -261,12 +283,11 @@
             .layout { flex-direction: column; }
             .form-grid, .form-grid-4 { grid-template-columns: 1fr; }
             .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .msg-type-tabs { flex-wrap: wrap; }
         }
 
         .hidden { display: none !important; }
     </style>
-<base target="_blank">
-<base target="_blank">
 </head>
 <body>
     <div id="app">
@@ -448,23 +469,41 @@
                     <div class="pagination" id="audit-pagination"></div>
                 </section>
 
-                <!-- MESSAGES / DEVIS -->
+                <!-- MESSAGES / DEVIS & SERVICE -->
                 <section id="messages-view" class="view" style="display:none">
                     <div class="page-header">
                         <div>
-                            <h2 class="page-title">Messages & Devis</h2>
-                            <p style="color:var(--gray-500);font-size:14px">Messages reçus depuis le formulaire du site web Technoclim</p>
+                            <h2 class="page-title">Messages & Demandes</h2>
+                            <p style="color:var(--gray-500);font-size:14px">Devis et demandes de service depuis le site Technoclim</p>
                         </div>
                         <div style="display:flex;gap:8px;align-items:center">
                             <span id="msg-stats" style="font-size:14px;color:var(--gray-500)"></span>
                             <button class="btn" onclick="loadMessages()"><i class="fas fa-sync"></i></button>
                         </div>
                     </div>
-                    <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr);margin-bottom:24px">
+                    
+                    <!-- Stats Cards -->
+                    <div class="stats-grid" style="grid-template-columns: repeat(5, 1fr);margin-bottom:24px">
                         <div class="stat-card"><i class="fas fa-envelope text-blue"></i><div><h3 id="msg-total">0</h3><p>Total</p></div></div>
+                        <div class="stat-card"><i class="fas fa-file-invoice text-blue"></i><div><h3 id="msg-devis">0</h3><p>Devis</p></div></div>
+                        <div class="stat-card"><i class="fas fa-tools text-purple"></i><div><h3 id="msg-service">0</h3><p>Services</p></div></div>
                         <div class="stat-card"><i class="fas fa-envelope-open text-orange"></i><div><h3 id="msg-unread">0</h3><p>Non lus</p></div></div>
                         <div class="stat-card"><i class="fas fa-calendar-day text-green"></i><div><h3 id="msg-today">0</h3><p>Aujourd'hui</p></div></div>
                     </div>
+
+                    <!-- Type Tabs -->
+                    <div class="msg-type-tabs">
+                        <button class="msg-type-tab active" onclick="filterMessages('all', this)">
+                            <i class="fas fa-inbox"></i> Tous <span class="badge badge-secondary" id="tab-count-all">0</span>
+                        </button>
+                        <button class="msg-type-tab" onclick="filterMessages('devis', this)">
+                            <i class="fas fa-file-invoice"></i> Devis <span class="badge badge-devis" id="tab-count-devis">0</span>
+                        </button>
+                        <button class="msg-type-tab" onclick="filterMessages('service', this)">
+                            <i class="fas fa-tools"></i> Services <span class="badge badge-service" id="tab-count-service">0</span>
+                        </button>
+                    </div>
+
                     <div class="filters-bar">
                         <input type="text" id="msg-search" placeholder="Rechercher un message..." oninput="loadMessages()">
                         <select id="msg-filter" onchange="loadMessages()">
@@ -477,11 +516,12 @@
                             <thead>
                                 <tr>
                                     <th style="width:40px"></th>
+                                    <th>Type</th>
                                     <th>Date</th>
                                     <th>Nom</th>
                                     <th>Email</th>
                                     <th>Téléphone</th>
-                                    <th>Produit / Sujet</th>
+                                    <th>Produit / Service</th>
                                     <th>Message</th>
                                     <th>Actions</th>
                                 </tr>
