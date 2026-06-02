@@ -7,6 +7,7 @@ import os
 import json
 import uuid
 import sys
+import traceback
 from functools import wraps
 from datetime import datetime
 from werkzeug.utils import secure_filename
@@ -14,8 +15,6 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from flask import Flask, request, jsonify, send_from_directory, g
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
-from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -23,15 +22,16 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-
 from woocommerce import API
 
-if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
-# ============================================================
-# FLASK APP CONFIG
-# ============================================================
+def safe_print(message):
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        encoding = sys.stdout.encoding or 'utf-8'
+        print(str(message).encode(encoding, errors='replace').decode(encoding))
+
 # ============================================================
 # FLASK APP CONFIG
 # ============================================================
@@ -57,14 +57,15 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 db = SQLAlchemy(app)
 
 # ============================================================
-# CORS — CONFIGURATION EXPLICITE ET LARGE
+# CORS — CONFIGURATION EXPLICITE ET LARGE (CRITIQUE)
 # ============================================================
 CORS(app, resources={
     r"/api/*": {
         "origins": "*",
-        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Authorization", "Content-Type", "Accept"],
-        "supports_credentials": True
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+        "allow_headers": ["Authorization", "Content-Type", "Accept", "X-Requested-With"],
+        "supports_credentials": True,
+        "expose_headers": ["Content-Type", "X-Total-Count"]
     }
 })
 
@@ -89,46 +90,40 @@ def parse_int(value, default=0):
         return default
     return int(float(value.replace(',', '.')))
 
-
-def parse_datetime(value):
-    value = clean_text(value)
-    return datetime.fromisoformat(value) if value else None
-
-
-def product_integrity_message(error):
-    message = str(error)
-    if 'products.sku' in message:
-        return 'SKU deja utilise. Laissez le champ vide ou choisissez un SKU unique.'
-    if 'products.slug' in message:
-        return 'Slug deja utilise. Choisissez un slug unique.'
-    return message
-
 # ============================================================
-# GESTIONNAIRE D'ERREURS GLOBAL — CRITIQUE
+# GESTIONNAIRES D'ERREURS GLOBAUX — CRITIQUE POUR DEBUG
 # ============================================================
 @app.errorhandler(Exception)
 def handle_exception(e):
     """Capture toutes les exceptions et retourne du JSON propre"""
     db.session.rollback()
-    import traceback
     traceback.print_exc()
-    
-    # Log détaillé
-    print(f"❌ ERREUR 500: {type(e).__name__}: {str(e)}")
-    
+
+    error_msg = str(e)
+    error_type = type(e).__name__
+
+    # Log détaillé dans la console serveur
+    safe_print(f"\n❌❌❌ ERREUR 500 — {error_type}: {error_msg}")
+    safe_print(f"📍 Route: {request.method} {request.path}")
+    safe_print(f"🔑 Headers: {dict(request.headers)}")
+
     return jsonify({
         'success': False,
-        'message': str(e),
-        'error_type': type(e).__name__
+        'message': error_msg,
+        'error_type': error_type,
+        'route': f"{request.method} {request.path}"
     }), 500
+
 
 @app.errorhandler(404)
 def not_found(e):
     return jsonify({
         'success': False,
         'message': 'Route non trouvée',
-        'path': request.path
+        'path': request.path,
+        'method': request.method
     }), 404
+
 
 @app.errorhandler(405)
 def method_not_allowed(e):
@@ -138,29 +133,51 @@ def method_not_allowed(e):
         'method': request.method,
         'path': request.path
     }), 405
+
+
 # ============================================================
-# WOOCOMMERCE CONFIG
+# WOOCOMMERCE CONFIG — INITIALISATION LAZY
 # ============================================================
-WP_URL = os.environ.get('WP_URL', '').strip()
-WP_CONSUMER_KEY = os.environ.get('WP_CONSUMER_KEY', '').strip()
-WP_CONSUMER_SECRET = os.environ.get('WP_CONSUMER_SECRET', '').strip()
 BASE_IMAGE_URL = os.environ.get('BASE_IMAGE_URL', '').strip()
 
-wcapi = None
-if WP_URL and WP_CONSUMER_KEY and WP_CONSUMER_SECRET:
-    try:
-        wcapi = API(
-            url=WP_URL,
-            consumer_key=WP_CONSUMER_KEY,
-            consumer_secret=WP_CONSUMER_SECRET,
-            version="wc/v3",
-            timeout=30
-        )
-        print(f"✅ WooCommerce connecté: {WP_URL}")
-    except Exception as e:
-        print(f"❌ Erreur connexion WooCommerce: {e}")
-else:
-    print("⚠️ WooCommerce non configuré")
+_wcapi_instance = None
+
+def get_wcapi():
+    """Initialise et retourne l'instance WooCommerce API (lazy singleton)."""
+    global _wcapi_instance
+    if _wcapi_instance is not None:
+        return _wcapi_instance
+
+    wp_url = os.environ.get('WP_URL', '').strip()
+    ck = os.environ.get('WP_CONSUMER_KEY', '').strip()
+    cs = os.environ.get('WP_CONSUMER_SECRET', '').strip()
+
+    safe_print(f"🔍 Tentative connexion WooCommerce...")
+    safe_print(f"   WP_URL présent: {'OUI (' + wp_url + ')' if wp_url else 'NON'}")
+    safe_print(f"   WP_CONSUMER_KEY présent: {'OUI' if ck else 'NON'}")
+    safe_print(f"   WP_CONSUMER_SECRET présent: {'OUI' if cs else 'NON'}")
+
+    if wp_url and ck and cs:
+        try:
+            _wcapi_instance = API(
+                url=wp_url,
+                consumer_key=ck,
+                consumer_secret=cs,
+                version="wc/v3",
+                timeout=30
+            )
+            safe_print(f"✅ WooCommerce connecté: {wp_url}")
+            return _wcapi_instance
+        except Exception as e:
+            safe_print(f"❌ Erreur connexion WooCommerce: {e}")
+            return None
+    else:
+        missing = []
+        if not wp_url: missing.append('WP_URL')
+        if not ck: missing.append('WP_CONSUMER_KEY')
+        if not cs: missing.append('WP_CONSUMER_SECRET')
+        safe_print(f"⚠️ WooCommerce non configuré — variables manquantes: {', '.join(missing)}")
+        return None
 
 
 # ============================================================
@@ -231,6 +248,10 @@ def get_public_base_url():
 def get_current_user():
     """Récupère l'utilisateur courant depuis le token Bearer"""
     auth_header = request.headers.get('Authorization', '')
+
+    # DEBUG: loguer les headers (à retirer en production stable)
+    # print(f"🔍 Auth header reçu: {auth_header[:60] if auth_header else 'AUCUN'}")
+
     if not auth_header.startswith('Bearer '):
         return None
     token = auth_header.split(' ')[1]
@@ -295,59 +316,7 @@ def log_action(action, entity_type=None, entity_id=None, details=None):
         db.session.commit()
     except Exception as e:
         db.session.rollback()
-        print(f"⚠️ Erreur audit log: {e}")
-
-
-def ensure_sqlite_schema():
-    """Add columns introduced by newer app versions to an existing SQLite DB."""
-    if db.engine.dialect.name != 'sqlite':
-        return
-
-    migrations = {
-        'users': {
-            'role': "VARCHAR(30) DEFAULT 'content_editor'",
-            'is_suspended': 'BOOLEAN DEFAULT 0',
-            'last_login': 'DATETIME'
-        },
-        'categories': {
-            'parent_id': 'INTEGER',
-            'level': 'INTEGER DEFAULT 0',
-            'sort_order': 'INTEGER DEFAULT 0',
-            'created_at': 'DATETIME'
-        },
-        'products': {
-            'product_type': "VARCHAR(20) DEFAULT 'simple'",
-            'brand': 'VARCHAR(100)',
-            'attributes': 'TEXT',
-            'variations': 'TEXT',
-            'featured': 'BOOLEAN DEFAULT 0',
-            'meta_title': 'VARCHAR(200)',
-            'meta_description': 'VARCHAR(500)',
-            'wp_sync_status': "VARCHAR(20) DEFAULT 'local'",
-            'wp_product_id': 'INTEGER',
-            'scheduled_publish_at': 'DATETIME',
-            'archived': 'BOOLEAN DEFAULT 0',
-            'updated_at': 'DATETIME'
-        }
-    }
-
-    for table_name, columns in migrations.items():
-        table_exists = db.session.execute(
-            text("SELECT name FROM sqlite_master WHERE type='table' AND name=:table_name"),
-            {'table_name': table_name}
-        ).first()
-        if not table_exists:
-            continue
-
-        existing = {
-            row[1] for row in db.session.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
-        }
-        for column_name, column_type in columns.items():
-            if column_name not in existing:
-                db.session.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
-                print(f"✅ Colonne ajoutée: {table_name}.{column_name}")
-
-    db.session.commit()
+        safe_print(f"⚠️ Erreur audit log: {e}")
 
 
 # ==================== DATABASE MODELS ====================
@@ -544,8 +513,10 @@ class ContactMessage(db.Model):
 # SYNCHRONISATION WOOCOMMERCE
 # ============================================================
 def sync_product_to_wordpress(product):
+    wcapi = get_wcapi()
     if not wcapi:
-        print("⚠️ WooCommerce non configuré, sync ignorée")
+        product._last_sync_error = 'WooCommerce non configuré: vérifiez WP_URL, WP_CONSUMER_KEY et WP_CONSUMER_SECRET.'
+        safe_print("⚠️ WooCommerce non configuré, sync ignorée")
         return None
 
     try:
@@ -630,23 +601,26 @@ def sync_product_to_wordpress(product):
                         "options": attr.get("options", [])
                     })
             except Exception as e:
-                print(f"⚠️ Erreur parsing attributs: {e}")
+                safe_print(f"⚠️ Erreur parsing attributs: {e}")
 
         if product.category:
             cat_name = product.category.name
-            cat_res = wcapi.get("products/categories", params={"search": cat_name, "per_page": 100})
-            if cat_res.status_code == 200:
-                cats = cat_res.json()
-                matched = next((c for c in cats if c["name"].lower() == cat_name.lower()), None)
-                if matched:
-                    data["categories"] = [{"id": matched["id"]}]
-                else:
-                    new_cat = wcapi.post("products/categories", {
-                        "name": cat_name,
-                        "slug": product.category.slug
-                    })
-                    if new_cat.status_code == 201:
-                        data["categories"] = [{"id": new_cat.json()["id"]}]
+            try:
+                cat_res = wcapi.get("products/categories", params={"search": cat_name, "per_page": 100})
+                if cat_res.status_code == 200:
+                    cats = cat_res.json()
+                    matched = next((c for c in cats if c["name"].lower() == cat_name.lower()), None)
+                    if matched:
+                        data["categories"] = [{"id": matched["id"]}]
+                    else:
+                        new_cat = wcapi.post("products/categories", {
+                            "name": cat_name,
+                            "slug": product.category.slug
+                        })
+                        if new_cat.status_code == 201:
+                            data["categories"] = [{"id": new_cat.json()["id"]}]
+            except Exception as e:
+                safe_print(f"⚠️ Erreur catégorie WP: {e}")
 
         base_url = get_public_base_url()
         if base_url and product.image:
@@ -671,7 +645,13 @@ def sync_product_to_wordpress(product):
             action = "créé"
 
         if not wp_product or 'id' not in wp_product:
-            print(f"❌ Erreur WooCommerce: {res.status_code} - {res.text[:300]}")
+            error_text = ""
+            try:
+                error_text = res.text[:500]
+            except:
+                pass
+            product._last_sync_error = f"WooCommerce HTTP {res.status_code}: {error_text}"
+            safe_print(f"❌ Erreur WooCommerce: {res.status_code} - {error_text[:300]}")
             product.wp_sync_status = 'failed'
             db.session.commit()
             return None
@@ -680,7 +660,7 @@ def sync_product_to_wordpress(product):
         product.wp_product_id = parent_id
         product.wp_sync_status = 'synced'
         db.session.commit()
-        print(f"🔄 Produit WooCommerce {action} (ID: {parent_id})")
+        safe_print(f"🔄 Produit WooCommerce {action} (ID: {parent_id})")
 
         if ptype == 'variable' and product.variations:
             sync_variations_to_wc(product, parent_id)
@@ -688,15 +668,21 @@ def sync_product_to_wordpress(product):
         return wp_product
 
     except Exception as e:
-        print(f"❌ Exception sync: {e}")
-        import traceback
+        # 🔴 CORRECTION CRITIQUE : rollback avant tout
+        db.session.rollback()
+        product._last_sync_error = f"{type(e).__name__}: {e}"
+        safe_print(f"❌ Exception sync: {e}")
         traceback.print_exc()
         product.wp_sync_status = 'failed'
-        db.session.commit()
+        try:
+            db.session.commit()
+        except Exception as commit_err:
+            safe_print(f"❌ Impossible de sauvegarder le statut failed: {commit_err}")
         return None
 
 
 def sync_variations_to_wc(product, parent_id):
+    wcapi = get_wcapi()
     if not wcapi or not product.variations:
         return
 
@@ -738,13 +724,13 @@ def sync_variations_to_wc(product, parent_id):
             sku = var_data['sku']
             if sku and sku in existing_by_sku:
                 r = wcapi.put(f"products/{parent_id}/variations/{existing_by_sku[sku]}", var_data)
-                print(f"  ↳ Variation {sku} mise à jour" if r.status_code in (200,201) else f"  ⚠️ Err update var {sku}")
+                safe_print(f"  ↳ Variation {sku} mise à jour" if r.status_code in (200,201) else f"  ⚠️ Err update var {sku}")
             else:
                 r = wcapi.post(f"products/{parent_id}/variations", var_data)
-                print(f"  ↳ Variation {sku} créée" if r.status_code == 201 else f"  ⚠️ Err create var {sku}")
+                safe_print(f"  ↳ Variation {sku} créée" if r.status_code == 201 else f"  ⚠️ Err create var {sku}")
 
     except Exception as e:
-        print(f"❌ Erreur sync variations: {e}")
+        safe_print(f"❌ Erreur sync variations: {e}")
 
 
 # ==================== INIT DB ====================
@@ -752,7 +738,6 @@ def sync_variations_to_wc(product, parent_id):
 def init_db():
     with app.app_context():
         db.create_all()
-        ensure_sqlite_schema()
 
         admin = User.query.filter_by(username='admin').first()
         if not admin:
@@ -765,12 +750,11 @@ def init_db():
             )
             db.session.add(admin)
             db.session.commit()
-            print('✅ Admin créé: admin / admin123')
+            safe_print('✅ Admin créé: admin / admin123')
 
-        print(f'✅ Base initialisée. Messages: {ContactMessage.query.count()}')
+        safe_print(f'✅ Base initialisée. Messages: {ContactMessage.query.count()}')
         if Category.query.count() == 0:
-            print("⚠️ Aucune catégorie trouvée. Exécutez le script SQL powers_db_mysql.sql")
-
+            safe_print("⚠️ Aucune catégorie trouvée. Exécutez le script SQL powers_db_mysql.sql")
 
 
 
@@ -783,7 +767,7 @@ def send_contact_email(data):
     to_email = os.environ.get('CONTACT_EMAIL', 'comercial@technoclim.ma').strip()
 
     if not all([smtp_host, smtp_user, smtp_pass]):
-        print("⚠️ SMTP non configuré, email non envoyé")
+        safe_print("⚠️ SMTP non configuré, email non envoyé")
         return False
 
     try:
@@ -820,13 +804,75 @@ def send_contact_email(data):
         server.login(smtp_user, smtp_pass)
         server.send_message(msg)
         server.quit()
-        print(f"✅ Email envoyé à {to_email}")
+        safe_print(f"✅ Email envoyé à {to_email}")
         return True
     except Exception as e:
-        print(f"❌ Erreur envoi email: {e}")
-        import traceback
+        safe_print(f"❌ Erreur envoi email: {e}")
         traceback.print_exc()
         return False
+
+# ============================================================
+# DIAGNOSTIC ROUTES
+# ============================================================
+
+@app.route('/api/diag/env', methods=['GET'])
+def diag_env():
+    """Route de diagnostic — montre les variables d'environnement (masquées)"""
+    wp_url = os.environ.get('WP_URL', '')
+    ck = os.environ.get('WP_CONSUMER_KEY', '')
+    cs = os.environ.get('WP_CONSUMER_SECRET', '')
+    db_url = os.environ.get('DATABASE_URL', '')
+
+    return jsonify({
+        'success': True,
+        'woocommerce': {
+            'wp_url_configured': bool(wp_url),
+            'wp_url_preview': wp_url[:30] + '...' if len(wp_url) > 30 else wp_url,
+            'consumer_key_configured': bool(ck),
+            'consumer_key_preview': ck[:8] + '...' if len(ck) > 8 else ('OK' if ck else 'MISSING'),
+            'consumer_secret_configured': bool(cs),
+            'consumer_secret_preview': cs[:8] + '...' if len(cs) > 8 else ('OK' if cs else 'MISSING'),
+        },
+        'database': {
+            'configured': bool(db_url),
+            'type': 'MySQL' if 'mysql' in db_url.lower() else ('SQLite' if 'sqlite' in db_url.lower() else 'Unknown')
+        },
+        'base_image_url': bool(os.environ.get('BASE_IMAGE_URL', '')),
+        'all_env_keys': [k for k in os.environ.keys() if not k.startswith('_')]
+    })
+
+
+@app.route('/api/diag/wc-test', methods=['GET'])
+@require_auth
+def diag_wc_test():
+    """Teste la connexion WooCommerce en temps réel"""
+    wcapi = get_wcapi()
+    if not wcapi:
+        return jsonify({
+            'success': False,
+            'message': 'WooCommerce non configuré. Vérifiez WP_URL, WP_CONSUMER_KEY, WP_CONSUMER_SECRET dans Railway.',
+            'env_check': {
+                'WP_URL': bool(os.environ.get('WP_URL', '')),
+                'WP_CONSUMER_KEY': bool(os.environ.get('WP_CONSUMER_KEY', '')),
+                'WP_CONSUMER_SECRET': bool(os.environ.get('WP_CONSUMER_SECRET', ''))
+            }
+        }), 400
+
+    try:
+        res = wcapi.get("products", params={"per_page": 1})
+        return jsonify({
+            'success': True,
+            'wp_connected': res.status_code == 200,
+            'wp_status': res.status_code,
+            'wp_response_preview': str(res.json())[:200] if res.status_code == 200 else res.text[:200]
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': str(e),
+            'error_type': type(e).__name__
+        }), 502
+
 
 # ============================================================
 # AUTH ROUTES
@@ -912,7 +958,7 @@ def register():
 def receive_contact():
     """Reçoit les soumissions du formulaire de devis - accepte tout format"""
     data = {}
-    
+
     if request.is_json:
         data = request.get_json()
     elif request.form:
@@ -925,8 +971,8 @@ def receive_contact():
         except:
             data = {}
 
-    print("📨 Données reçues:", data)
-    print("📨 Clés:", list(data.keys()))
+    safe_print(f"📨 Données reçues: {data}")
+    safe_print(f"📨 Clés: {list(data.keys())}")
 
     secret = data.get('secret', '')
     expected_secret = os.environ.get('CONTACT_SECRET', '')
@@ -991,7 +1037,7 @@ def receive_contact():
             'service': service, 'subject': msg.subject
         })
     except Exception as e:
-        print(f"⚠️ Erreur email: {e}")
+        safe_print(f"⚠️ Erreur email: {e}")
 
     return jsonify({
         'success': True,
@@ -1467,7 +1513,7 @@ def create_product():
             meta_title=clean_text(data.get('meta_title')),
             meta_description=clean_text(data.get('meta_description')),
             wp_sync_status='local',
-            scheduled_publish_at=parse_datetime(data.get('scheduled_publish_at'))
+            scheduled_publish_at=datetime.fromisoformat(data.get('scheduled_publish_at')) if data.get('scheduled_publish_at') else None
         )
 
         db.session.add(product)
@@ -1492,14 +1538,10 @@ def create_product():
         })
 
         return jsonify({'success': True, 'data': product.to_dict()}), 201
-    except IntegrityError as e:
-        db.session.rollback()
-        return jsonify({'success': False, 'message': product_integrity_message(e)}), 400
     except Exception as e:
         db.session.rollback()
-        import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'message': str(e)}), 400
+        return jsonify({'success': False, 'message': str(e), 'error_type': type(e).__name__}), 400
 
 
 @app.route('/api/products/<int:id>', methods=['PUT'])
@@ -1544,7 +1586,7 @@ def update_product(id):
         if 'featured' in data:
             product.featured = data['featured'] == 'true' or data['featured'] == '1'
         if 'scheduled_publish_at' in data and data['scheduled_publish_at']:
-            product.scheduled_publish_at = parse_datetime(data['scheduled_publish_at'])
+            product.scheduled_publish_at = datetime.fromisoformat(data['scheduled_publish_at'])
 
         if 'image' in request.files and request.files['image'].filename:
             image_filename = save_uploaded_file(request.files['image'])
@@ -1585,14 +1627,10 @@ def update_product(id):
         })
 
         return jsonify({'success': True, 'data': product.to_dict()})
-    except IntegrityError as e:
-        db.session.rollback()
-        return jsonify({'success': False, 'message': product_integrity_message(e)}), 400
     except Exception as e:
         db.session.rollback()
-        import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'message': str(e)}), 400
+        return jsonify({'success': False, 'message': str(e), 'error_type': type(e).__name__}), 400
 
 
 @app.route('/api/products/<int:id>/publish', methods=['POST'])
@@ -1625,8 +1663,8 @@ def publish_product_to_wp(id):
     else:
         return jsonify({
             'success': False,
-            'message': 'Échec de la publication sur WordPress. Vérifiez la configuration.'
-        }), 500
+            'message': getattr(product, '_last_sync_error', None) or 'Échec de la publication sur WordPress. Vérifiez la configuration.'
+        }), 502
 
 
 @app.route('/api/products/<int:id>/duplicate', methods=['POST'])
@@ -1736,7 +1774,7 @@ def delete_product(id):
         return jsonify({'success': True, 'message': 'Product deleted successfully'})
     except Exception as e:
         db.session.rollback()
-        return jsonify({'success': False, 'message': str(e)}), 400
+        return jsonify({'success': False, 'message': str(e), 'error_type': type(e).__name__}), 400
 
 
 @app.route('/api/products/bulk-delete', methods=['POST'])
@@ -1754,7 +1792,7 @@ def bulk_delete_products():
         return jsonify({'success': True, 'message': f'{len(ids)} products deleted'})
     except Exception as e:
         db.session.rollback()
-        return jsonify({'success': False, 'message': str(e)}), 400
+        return jsonify({'success': False, 'message': str(e), 'error_type': type(e).__name__}), 400
 
 
 @app.route('/api/products/publish-scheduled', methods=['POST'])
