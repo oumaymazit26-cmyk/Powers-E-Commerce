@@ -527,7 +527,10 @@ document.getElementById('product-form').addEventListener('submit', async (e) => 
 
     try {
         const res = await fetch(url, { method, headers: getAuthHeaders(), body: formData });
-        const data = await res.json();
+        const contentType = res.headers.get('content-type') || '';
+        const data = contentType.includes('application/json')
+            ? await res.json()
+            : { success: false, message: `Erreur serveur (${res.status})` };
         if (data.success) {
             const wpMsg = data.data.wp_sync_status === 'synced' ? ' et publié sur WordPress' : '';
             toast(id ? `Produit mis à jour${wpMsg}` : `Produit créé${wpMsg}`);

@@ -6,6 +6,7 @@ Backend: Flask + SQLAlchemy + WooCommerce Sync + RBAC + Audit Log + Draft/Live
 import os
 import json
 import uuid
+import sys
 from functools import wraps
 from datetime import datetime
 from werkzeug.utils import secure_filename
@@ -13,6 +14,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from flask import Flask, request, jsonify, send_from_directory, g
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -23,6 +26,12 @@ from email.mime.multipart import MIMEMultipart
 
 from woocommerce import API
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
+# ============================================================
+# FLASK APP CONFIG
+# ============================================================
 # ============================================================
 # FLASK APP CONFIG
 # ============================================================
@@ -46,8 +55,89 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 db = SQLAlchemy(app)
-CORS(app)
 
+# ============================================================
+# CORS — CONFIGURATION EXPLICITE ET LARGE
+# ============================================================
+CORS(app, resources={
+    r"/api/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Authorization", "Content-Type", "Accept"],
+        "supports_credentials": True
+    }
+})
+
+
+def clean_text(value):
+    if value is None:
+        return None
+    value = str(value).strip()
+    return value or None
+
+
+def parse_float(value, default=0.0):
+    value = clean_text(value)
+    if value is None:
+        return default
+    return float(value.replace(',', '.'))
+
+
+def parse_int(value, default=0):
+    value = clean_text(value)
+    if value is None:
+        return default
+    return int(float(value.replace(',', '.')))
+
+
+def parse_datetime(value):
+    value = clean_text(value)
+    return datetime.fromisoformat(value) if value else None
+
+
+def product_integrity_message(error):
+    message = str(error)
+    if 'products.sku' in message:
+        return 'SKU deja utilise. Laissez le champ vide ou choisissez un SKU unique.'
+    if 'products.slug' in message:
+        return 'Slug deja utilise. Choisissez un slug unique.'
+    return message
+
+# ============================================================
+# GESTIONNAIRE D'ERREURS GLOBAL — CRITIQUE
+# ============================================================
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """Capture toutes les exceptions et retourne du JSON propre"""
+    db.session.rollback()
+    import traceback
+    traceback.print_exc()
+    
+    # Log détaillé
+    print(f"❌ ERREUR 500: {type(e).__name__}: {str(e)}")
+    
+    return jsonify({
+        'success': False,
+        'message': str(e),
+        'error_type': type(e).__name__
+    }), 500
+
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({
+        'success': False,
+        'message': 'Route non trouvée',
+        'path': request.path
+    }), 404
+
+@app.errorhandler(405)
+def method_not_allowed(e):
+    return jsonify({
+        'success': False,
+        'message': 'Méthode non autorisée',
+        'method': request.method,
+        'path': request.path
+    }), 405
 # ============================================================
 # WOOCOMMERCE CONFIG
 # ============================================================
@@ -206,6 +296,58 @@ def log_action(action, entity_type=None, entity_id=None, details=None):
     except Exception as e:
         db.session.rollback()
         print(f"⚠️ Erreur audit log: {e}")
+
+
+def ensure_sqlite_schema():
+    """Add columns introduced by newer app versions to an existing SQLite DB."""
+    if db.engine.dialect.name != 'sqlite':
+        return
+
+    migrations = {
+        'users': {
+            'role': "VARCHAR(30) DEFAULT 'content_editor'",
+            'is_suspended': 'BOOLEAN DEFAULT 0',
+            'last_login': 'DATETIME'
+        },
+        'categories': {
+            'parent_id': 'INTEGER',
+            'level': 'INTEGER DEFAULT 0',
+            'sort_order': 'INTEGER DEFAULT 0',
+            'created_at': 'DATETIME'
+        },
+        'products': {
+            'product_type': "VARCHAR(20) DEFAULT 'simple'",
+            'brand': 'VARCHAR(100)',
+            'attributes': 'TEXT',
+            'variations': 'TEXT',
+            'featured': 'BOOLEAN DEFAULT 0',
+            'meta_title': 'VARCHAR(200)',
+            'meta_description': 'VARCHAR(500)',
+            'wp_sync_status': "VARCHAR(20) DEFAULT 'local'",
+            'wp_product_id': 'INTEGER',
+            'scheduled_publish_at': 'DATETIME',
+            'archived': 'BOOLEAN DEFAULT 0',
+            'updated_at': 'DATETIME'
+        }
+    }
+
+    for table_name, columns in migrations.items():
+        table_exists = db.session.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name=:table_name"),
+            {'table_name': table_name}
+        ).first()
+        if not table_exists:
+            continue
+
+        existing = {
+            row[1] for row in db.session.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+        }
+        for column_name, column_type in columns.items():
+            if column_name not in existing:
+                db.session.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
+                print(f"✅ Colonne ajoutée: {table_name}.{column_name}")
+
+    db.session.commit()
 
 
 # ==================== DATABASE MODELS ====================
@@ -610,6 +752,7 @@ def sync_variations_to_wc(product, parent_id):
 def init_db():
     with app.app_context():
         db.create_all()
+        ensure_sqlite_schema()
 
         admin = User.query.filter_by(username='admin').first()
         if not admin:
@@ -1299,32 +1442,32 @@ def create_product():
             status = 'draft'
 
         product = Product(
-            name=data.get('name', ''),
-            slug=data.get('slug', data.get('name', '').lower().replace(' ', '-')),
-            sku=data.get('sku'),
-            description=data.get('description'),
-            short_description=data.get('short_description'),
-            price=float(data.get('price', 0)),
-            sale_price=float(data.get('sale_price', 0)) if data.get('sale_price') else 0,
-            cost_price=float(data.get('cost_price', 0)) if data.get('cost_price') else 0,
-            stock_quantity=int(data.get('stock_quantity', 0)),
-            stock_status=data.get('stock_status', 'in_stock'),
-            weight=float(data.get('weight', 0)) if data.get('weight') else 0,
-            dimensions=data.get('dimensions'),
+            name=clean_text(data.get('name')) or '',
+            slug=clean_text(data.get('slug')) or (clean_text(data.get('name')) or '').lower().replace(' ', '-'),
+            sku=clean_text(data.get('sku')),
+            description=clean_text(data.get('description')),
+            short_description=clean_text(data.get('short_description')),
+            price=parse_float(data.get('price')),
+            sale_price=parse_float(data.get('sale_price')),
+            cost_price=parse_float(data.get('cost_price')),
+            stock_quantity=parse_int(data.get('stock_quantity')),
+            stock_status=clean_text(data.get('stock_status')) or 'in_stock',
+            weight=parse_float(data.get('weight')),
+            dimensions=clean_text(data.get('dimensions')),
             image=image_filename,
             gallery=','.join(gallery_files) if gallery_files else None,
-            category_id=int(data.get('category_id')) if data.get('category_id') else None,
-            tags=data.get('tags'),
+            category_id=parse_int(data.get('category_id'), None) if clean_text(data.get('category_id')) else None,
+            tags=clean_text(data.get('tags')),
             status=status,
-            product_type=data.get('product_type', 'simple'),
-            brand=data.get('brand'),
-            attributes=data.get('attributes'),
-            variations=data.get('variations'),
+            product_type=clean_text(data.get('product_type')) or 'simple',
+            brand=clean_text(data.get('brand')),
+            attributes=clean_text(data.get('attributes')),
+            variations=clean_text(data.get('variations')),
             featured=data.get('featured') == 'true' or data.get('featured') == '1',
-            meta_title=data.get('meta_title'),
-            meta_description=data.get('meta_description'),
+            meta_title=clean_text(data.get('meta_title')),
+            meta_description=clean_text(data.get('meta_description')),
             wp_sync_status='local',
-            scheduled_publish_at=datetime.fromisoformat(data.get('scheduled_publish_at')) if data.get('scheduled_publish_at') else None
+            scheduled_publish_at=parse_datetime(data.get('scheduled_publish_at'))
         )
 
         db.session.add(product)
@@ -1349,6 +1492,9 @@ def create_product():
         })
 
         return jsonify({'success': True, 'data': product.to_dict()}), 201
+    except IntegrityError as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'message': product_integrity_message(e)}), 400
     except Exception as e:
         db.session.rollback()
         import traceback
@@ -1378,24 +1524,27 @@ def update_product(id):
                   'meta_title', 'meta_description']
         for field in fields:
             if field in data:
-                setattr(product, field, data[field])
+                value = clean_text(data[field])
+                if field in ('name', 'status', 'stock_status', 'product_type'):
+                    value = value or getattr(product, field)
+                setattr(product, field, value)
 
         if 'price' in data:
-            product.price = float(data['price'])
+            product.price = parse_float(data['price'])
         if 'sale_price' in data:
-            product.sale_price = float(data['sale_price'])
+            product.sale_price = parse_float(data['sale_price'])
         if 'cost_price' in data:
-            product.cost_price = float(data['cost_price'])
+            product.cost_price = parse_float(data['cost_price'])
         if 'stock_quantity' in data:
-            product.stock_quantity = int(data['stock_quantity'])
+            product.stock_quantity = parse_int(data['stock_quantity'])
         if 'weight' in data:
-            product.weight = float(data['weight'])
+            product.weight = parse_float(data['weight'])
         if 'category_id' in data:
-            product.category_id = int(data['category_id']) if data['category_id'] else None
+            product.category_id = parse_int(data['category_id'], None) if clean_text(data['category_id']) else None
         if 'featured' in data:
             product.featured = data['featured'] == 'true' or data['featured'] == '1'
         if 'scheduled_publish_at' in data and data['scheduled_publish_at']:
-            product.scheduled_publish_at = datetime.fromisoformat(data['scheduled_publish_at'])
+            product.scheduled_publish_at = parse_datetime(data['scheduled_publish_at'])
 
         if 'image' in request.files and request.files['image'].filename:
             image_filename = save_uploaded_file(request.files['image'])
@@ -1436,6 +1585,9 @@ def update_product(id):
         })
 
         return jsonify({'success': True, 'data': product.to_dict()})
+    except IntegrityError as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'message': product_integrity_message(e)}), 400
     except Exception as e:
         db.session.rollback()
         import traceback
@@ -1689,6 +1841,7 @@ def healthz():
     return jsonify({'status': 'ok'})
 # ==================== MAIN ====================
 
+init_db()
+
 if __name__ == '__main__':
-    init_db()
     app.run(debug=True, host='0.0.0.0', port=5000)
