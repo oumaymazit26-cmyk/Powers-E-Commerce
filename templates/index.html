@@ -552,7 +552,7 @@
                 <h3 id="prod-modal-title">Nouveau produit</h3>
                 <button class="close-btn" onclick="closeModal('product-modal')">&times;</button>
             </div>
-            <form id="product-form" enctype="multipart/form-data">
+            <form id="product-form" enctype="multipart/form-data" novalidate>
                 <input type="hidden" id="prod-id">
 
                 <div class="tabs">
@@ -594,14 +594,14 @@
                 <!-- TAB PRICING -->
                 <div id="tab-pricing" class="tab-panel">
                     <div class="form-grid" id="simple-pricing">
-                        <div class="form-group"><label>Prix régulier *</label><input type="number" step="0.01" name="price" id="p-price" required></div>
-                        <div class="form-group"><label>Prix promo</label><input type="number" step="0.01" name="sale_price" id="p-sale"></div>
-                        <div class="form-group"><label>Prix d'achat</label><input type="number" step="0.01" name="cost_price" id="p-cost"></div>
+                        <div class="form-group"><label>Prix régulier *</label><input type="text" inputmode="decimal" name="price" id="p-price" required></div>
+                        <div class="form-group"><label>Prix promo</label><input type="text" inputmode="decimal" name="sale_price" id="p-sale"></div>
+                        <div class="form-group"><label>Prix d'achat</label><input type="text" inputmode="decimal" name="cost_price" id="p-cost"></div>
                         <div class="form-group"><label>Quantité stock</label><input type="number" name="stock_quantity" id="p-stock" value="0"></div>
                         <div class="form-group"><label>Statut stock</label>
                             <select name="stock_status" id="p-stock-status"><option value="in_stock">En stock</option><option value="out_of_stock">Rupture</option></select>
                         </div>
-                        <div class="form-group"><label>Poids (kg)</label><input type="number" step="0.01" name="weight" id="p-weight"></div>
+                        <div class="form-group"><label>Poids (kg)</label><input type="text" inputmode="decimal" name="weight" id="p-weight"></div>
                         <div class="form-group"><label>Dimensions (L x l x H)</label><input type="text" name="dimensions" id="p-dimensions" placeholder="100 x 50 x 30"></div>
                         <div class="form-group"><label>Publication planifiée</label><input type="datetime-local" name="scheduled_publish_at" id="p-scheduled"></div>
                     </div>

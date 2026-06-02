@@ -89,7 +89,7 @@ document.addEventListener('DOMContentLoaded', () => {
 async function initAuth() {
     try {
         const res = await fetch(`${API}/api/auth/me`, { headers: getAuthHeaders() });
-        const data = await res.json();
+        const data = await parseApiResponse(res);
         if (data.success) {
             currentUser = data.user;
             userPermissions = data.user.permissions || [];
@@ -155,6 +155,55 @@ function switchTab(btn) {
     document.getElementById(btn.dataset.tab).classList.add('active');
 }
 
+function switchProductTab(tabId) {
+    const btn = document.querySelector(`[data-tab="${tabId}"]`);
+    if (btn) switchTab(btn);
+}
+
+function normalizeDecimalInput(value) {
+    return String(value || '').trim().replace(',', '.');
+}
+
+function validateProductForm() {
+    const name = document.getElementById('p-name');
+    const type = document.getElementById('p-type').value;
+    const price = document.getElementById('p-price');
+
+    if (!name.value.trim()) {
+        switchProductTab('tab-general');
+        name.focus();
+        toast('Le titre du produit est obligatoire', 'error');
+        return false;
+    }
+
+    if (type !== 'variable' && !normalizeDecimalInput(price.value)) {
+        switchProductTab('tab-pricing');
+        price.focus();
+        toast('Le prix régulier est obligatoire', 'error');
+        return false;
+    }
+
+    if (price.value) price.value = normalizeDecimalInput(price.value);
+    ['p-sale', 'p-cost', 'p-weight'].forEach(id => {
+        const input = document.getElementById(id);
+        if (input && input.value) input.value = normalizeDecimalInput(input.value);
+    });
+
+    return true;
+}
+
+async function parseApiResponse(res) {
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+        return await res.json();
+    }
+    const text = await res.text();
+    return {
+        success: false,
+        message: text ? `Erreur serveur ${res.status}: ${text.substring(0, 180)}` : `Erreur serveur ${res.status}`
+    };
+}
+
 /* ==================== TOAST ==================== */
 function toast(msg, type='success') {
     const container = document.getElementById('toast-container');
@@ -169,7 +218,7 @@ function toast(msg, type='success') {
 async function loadStats() {
     try {
         const res = await fetch(`${API}/api/stats`, { headers: getAuthHeaders() });
-        const data = await res.json();
+        const data = await parseApiResponse(res);
         if (data.success) {
             document.getElementById('st-total').textContent = data.data.total_products;
             document.getElementById('st-active').textContent = data.data.active_products;
@@ -200,7 +249,7 @@ async function loadProducts(page=1) {
 
     try {
         const res = await fetch(`${API}/api/products?${params}`, { headers: getAuthHeaders() });
-        const data = await res.json();
+        const data = await parseApiResponse(res);
         const tbody = document.getElementById('products-tbody');
         tbody.innerHTML = '';
 
@@ -318,7 +367,7 @@ function openProductModal() {
     document.getElementById('p-type').value = 'simple';
     document.getElementById('p-status').value = 'draft';
     document.getElementById('p-publish-wp').checked = false;
-    onProductTypeChange();
+    onProductTypeChange();  // ← AJOUTER CETTE LIGNE ICI
     currentAttributes = [];
     currentVariations = [];
     renderAttributesList();
@@ -338,15 +387,20 @@ function onProductTypeChange() {
     const simplePricing = document.getElementById('simple-pricing');
     const varInfo = document.getElementById('variable-pricing-info');
     const btnAddVar = document.getElementById('btn-add-variation');
+    const priceInput = document.getElementById('p-price');
 
     if (type === 'variable') {
         simplePricing.style.opacity = '0.5';
         simplePricing.style.pointerEvents = 'none';
+        // 🔴 CORRECTION : retirer required quand caché
+        priceInput.removeAttribute('required');
         varInfo.style.display = 'block';
         btnAddVar.style.display = 'inline-flex';
     } else {
         simplePricing.style.opacity = '1';
         simplePricing.style.pointerEvents = 'auto';
+        // 🔴 CORRECTION : remettre required quand visible
+        priceInput.setAttribute('required', 'required');
         varInfo.style.display = 'none';
         btnAddVar.style.display = 'none';
     }
@@ -499,6 +553,8 @@ function clearImagePreviews() {
 /* ==================== SAVE PRODUCT ==================== */
 document.getElementById('product-form').addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (!validateProductForm()) return;
+
     const id = document.getElementById('prod-id').value;
     const form = document.getElementById('product-form');
     const formData = new FormData(form);
@@ -527,10 +583,16 @@ document.getElementById('product-form').addEventListener('submit', async (e) => 
 
     try {
         const res = await fetch(url, { method, headers: getAuthHeaders(), body: formData });
-        const contentType = res.headers.get('content-type') || '';
-        const data = contentType.includes('application/json')
-            ? await res.json()
-            : { success: false, message: `Erreur serveur (${res.status})` };
+        
+        // 🔴 CRITIQUE : vérifier res.ok AVANT res.json()
+        if (!res.ok) {
+            const text = await res.text();
+            console.error('❌ Réponse serveur brute:', text.substring(0, 500));
+            toast(`Erreur serveur ${res.status}: ${text.substring(0, 100)}`, 'error');
+            return;
+        }
+        
+        const data = await parseApiResponse(res);
         if (data.success) {
             const wpMsg = data.data.wp_sync_status === 'synced' ? ' et publié sur WordPress' : '';
             toast(id ? `Produit mis à jour${wpMsg}` : `Produit créé${wpMsg}`);
@@ -539,13 +601,11 @@ document.getElementById('product-form').addEventListener('submit', async (e) => 
             else loadProducts(currentProductPage);
             loadStats();
         } else {
-            toast(data.message, 'error');
+            toast(data.message || 'Erreur du serveur', 'error');
         }
     } catch (e) { 
-        console.error('Save product error:', e);
-       
-    toast('Erreur lors de l\'enregistrement', 'error');
-
+        console.error('❌ Save product error:', e);
+        toast('Erreur réseau ou serveur indisponible', 'error');
     }
 });
 
@@ -646,7 +706,7 @@ async function publishToWP(id) {
             method: 'POST', 
             headers: getAuthHeaders() 
         });
-        const data = await res.json();
+        const data = await parseApiResponse(res);
         if (data.success) {
             toast('Produit publié sur WordPress !');
             loadProducts(currentProductPage);

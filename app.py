@@ -47,7 +47,8 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'pool_pre_ping': True
 }
 
-UPLOAD_FOLDER = 'static/uploads'
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_FOLDER = os.path.join(BASE_DIR, 'static', 'uploads')
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
@@ -164,7 +165,7 @@ def get_wcapi():
                 consumer_key=ck,
                 consumer_secret=cs,
                 version="wc/v3",
-                timeout=30
+                timeout=15
             )
             safe_print(f"✅ WooCommerce connecté: {wp_url}")
             return _wcapi_instance
@@ -1522,13 +1523,21 @@ def create_product():
         if product.category_id:
             product.category = Category.query.get(product.category_id)
 
+               # --- SYNC WP (isolé pour ne pas crasher la création du produit) ---
         wp_result = None
         if publish_to_wp and status == 'active':
-            if '*' in ROLE_PERMISSIONS.get(g.current_user.role, []) or 'product:publish' in ROLE_PERMISSIONS.get(g.current_user.role, []):
-                wp_result = sync_product_to_wordpress(product)
-            else:
-                product.wp_sync_status = 'local'
-                db.session.commit()
+            can_publish = ('*' in ROLE_PERMISSIONS.get(g.current_user.role, []) or 
+                          'product:publish' in ROLE_PERMISSIONS.get(g.current_user.role, []))
+            if can_publish:
+                try:
+                    wp_result = sync_product_to_wordpress(product)
+                except Exception as wp_err:
+                    safe_print(f"⚠️ Sync WP échouée mais produit sauvegardé: {wp_err}")
+                    product.wp_sync_status = 'failed'
+                    try:
+                        db.session.commit()
+                    except Exception as commit_err:
+                        safe_print(f"❌ Impossible de sauver le statut failed: {commit_err}")
 
         log_action('PRODUCT_CREATE', 'product', product.id, {
             'name': product.name,
@@ -1536,6 +1545,8 @@ def create_product():
             'published_to_wp': bool(wp_result),
             'sku': product.sku
         })
+
+        return jsonify({'success': True, 'data': product.to_dict()}), 201
 
         return jsonify({'success': True, 'data': product.to_dict()}), 201
     except Exception as e:
@@ -1610,21 +1621,30 @@ def update_product(id):
         if product.category_id:
             product.category = Category.query.get(product.category_id)
 
+               # --- SYNC WP (isolé pour ne pas crasher la création du produit) ---
         wp_result = None
-        if publish_to_wp and product.status == 'active' and not product.archived:
-            if '*' in ROLE_PERMISSIONS.get(g.current_user.role, []) or 'product:publish' in ROLE_PERMISSIONS.get(g.current_user.role, []):
-                wp_result = sync_product_to_wordpress(product)
+        if publish_to_wp and status == 'active':
+            can_publish = ('*' in ROLE_PERMISSIONS.get(g.current_user.role, []) or 
+                          'product:publish' in ROLE_PERMISSIONS.get(g.current_user.role, []))
+            if can_publish:
+                try:
+                    wp_result = sync_product_to_wordpress(product)
+                except Exception as wp_err:
+                    safe_print(f"⚠️ Sync WP échouée mais produit sauvegardé: {wp_err}")
+                    product.wp_sync_status = 'failed'
+                    try:
+                        db.session.commit()
+                    except Exception as commit_err:
+                        safe_print(f"❌ Impossible de sauver le statut failed: {commit_err}")
 
-        log_action('PRODUCT_UPDATE', 'product', product.id, {
-            'old': old_data,
-            'new': {
-                'name': product.name,
-                'price': product.price,
-                'stock_quantity': product.stock_quantity,
-                'status': product.status
-            },
-            'published_to_wp': bool(wp_result)
+        log_action('PRODUCT_CREATE', 'product', product.id, {
+            'name': product.name,
+            'status': product.status,
+            'published_to_wp': bool(wp_result),
+            'sku': product.sku
         })
+
+        return jsonify({'success': True, 'data': product.to_dict()}), 201
 
         return jsonify({'success': True, 'data': product.to_dict()})
     except Exception as e:
