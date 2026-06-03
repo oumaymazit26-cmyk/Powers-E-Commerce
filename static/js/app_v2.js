@@ -2004,12 +2004,9 @@ async function editProduct(id) {
         clearImagePreviews();
 
         // ─── Charger l'image existante ───
-         if (p.image) {
+        if (p.image_url) {
             const img = document.getElementById('main-image-preview');
-            // Si c'est déjà une URL (Cloudinary), on l'utilise directement
-            // Sinon on construit l'URL locale
-            const imgUrl = p.image.startsWith('http') ? p.image : `${API}/uploads/${p.image}`;
-            img.src = imgUrl;
+            img.src = p.image_url;
             img.style.display = 'block';
             const placeholder = document.querySelector('#main-image-zone .upload-placeholder');
             if (placeholder) placeholder.style.display = 'none';
