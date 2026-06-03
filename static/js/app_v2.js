@@ -270,6 +270,11 @@ async function loadProducts(page=1) {
                     ? '<span class="badge badge-failed"><i class="fas fa-times"></i></span>'
                     : '<span class="badge badge-local"><i class="fas fa-hdd"></i></span>';
 
+                // ── Miniature image dans le tableau ──
+                const imgThumb = p.image_url 
+                    ? `<img src="${p.image_url}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;margin-right:8px;vertical-align:middle" onerror="this.style.display='none'">`
+                    : '';
+
                 let actions = '';
                 if (hasPermission('product:update')) {
                     actions += `<button class="btn btn-sm" onclick="editProduct(${p.id})" title="Modifier"><i class="fas fa-edit"></i></button>`;
@@ -288,7 +293,7 @@ async function loadProducts(page=1) {
                 }
 
                 tr.innerHTML = `
-                    <td><strong>${p.name}</strong><br><small style="color:var(--gray-400)">${p.category ? p.category.name : '-'}</small></td>
+                    <td>${imgThumb}<strong>${p.name}</strong><br><small style="color:var(--gray-400)">${p.category ? p.category.name : '-'}</small></td>
                     <td>${typeBadge}</td>
                     <td>${p.sku || '-'}</td>
                     <td>${p.price ? p.price.toFixed(2) + ' €' : '-'}</td>
@@ -367,7 +372,7 @@ function openProductModal() {
     document.getElementById('p-type').value = 'simple';
     document.getElementById('p-status').value = 'draft';
     document.getElementById('p-publish-wp').checked = false;
-    onProductTypeChange();  // ← AJOUTER CETTE LIGNE ICI
+    onProductTypeChange();
     currentAttributes = [];
     currentVariations = [];
     renderAttributesList();
@@ -392,14 +397,12 @@ function onProductTypeChange() {
     if (type === 'variable') {
         simplePricing.style.opacity = '0.5';
         simplePricing.style.pointerEvents = 'none';
-        // 🔴 CORRECTION : retirer required quand caché
         priceInput.removeAttribute('required');
         varInfo.style.display = 'block';
         btnAddVar.style.display = 'inline-flex';
     } else {
         simplePricing.style.opacity = '1';
         simplePricing.style.pointerEvents = 'auto';
-        // 🔴 CORRECTION : remettre required quand visible
         priceInput.setAttribute('required', 'required');
         varInfo.style.display = 'none';
         btnAddVar.style.display = 'none';
@@ -481,7 +484,7 @@ function renderVariationsList() {
                     <div class="form-group small">
                         <label>${attr.name}</label>
                         <input type="text" placeholder="${attr.options.split(',')[0] || ''}" value="${val}" 
-                            onchange="updateVariationAttr(${idx}, '${attr.name.replace(/'/g, "\'")}', this.value)">
+                            onchange="updateVariationAttr(${idx}, '${attr.name.replace(/'/g, "\\'")}', this.value)">
                     </div>
                 `;
             }
@@ -584,7 +587,6 @@ document.getElementById('product-form').addEventListener('submit', async (e) => 
     try {
         const res = await fetch(url, { method, headers: getAuthHeaders(), body: formData });
         
-        // 🔴 CRITIQUE : vérifier res.ok AVANT res.json()
         if (!res.ok) {
             const text = await res.text();
             console.error('❌ Réponse serveur brute:', text.substring(0, 500));
@@ -675,7 +677,44 @@ async function editProduct(id) {
         renderVariationsList();
 
         onProductTypeChange();
+
+        // ════════════════════════════════════════════════
+        // ✅ FIX: Recharger les images existantes du produit
+        // ════════════════════════════════════════════════
         clearImagePreviews();
+
+        // Image principale
+        if (p.image_url) {
+            const mainImg = document.getElementById('main-image-preview');
+            mainImg.src = p.image_url;
+            mainImg.style.display = 'block';
+            mainImg.onerror = function() { this.style.display = 'none'; };
+            const placeholder = document.querySelector('#main-image-zone .upload-placeholder');
+            if (placeholder) placeholder.style.display = 'none';
+        }
+
+        // Galerie d'images
+        if (p.gallery) {
+            const galleryUrls = p.gallery.split(',').map(s => s.trim()).filter(Boolean);
+            galleryUrls.forEach((imgVal, i) => {
+                const slot = i + 1;
+                if (slot > 4) return;
+                // imgVal peut être une URL Cloudinary complète ou un filename local
+                let imgUrl = imgVal;
+                if (!imgVal.startsWith('http://') && !imgVal.startsWith('https://')) {
+                    imgUrl = window.location.origin + '/static/uploads/' + imgVal;
+                }
+                const preview = document.getElementById('gallery-preview-' + slot);
+                if (preview) {
+                    preview.src = imgUrl;
+                    preview.style.display = 'block';
+                    preview.onerror = function() { this.style.display = 'none'; };
+                    const slotEl = document.querySelector('.gallery-slot[data-slot="' + slot + '"] i');
+                    if (slotEl) slotEl.style.display = 'none';
+                }
+            });
+        }
+        // ════════════════════════════════════════════════
 
         document.getElementById('prod-modal-title').textContent = 'Modifier le produit';
         switchTab(document.querySelector('[data-tab="tab-general"]'));
@@ -1209,7 +1248,6 @@ async function loadMessages(page=1) {
     currentMessagePage = page;
     const params = new URLSearchParams({ page, per_page: 15 });
     const filter = document.getElementById('msg-filter')?.value || '';
-    const search = document.getElementById('msg-search')?.value || '';
     
     if (filter === 'unread') params.append('unread', 'true');
     if (currentMessageFilter !== 'all') params.append('message_type', currentMessageFilter);
@@ -1221,7 +1259,6 @@ async function loadMessages(page=1) {
         tbody.innerHTML = '';
 
         if (data.success) {
-            // Stats
             const statsRes = await fetch(`${API}/api/contact/stats`, { headers: getAuthHeaders() });
             const statsData = await statsRes.json();
             if (statsData.success) {
