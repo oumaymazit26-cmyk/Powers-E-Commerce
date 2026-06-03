@@ -1,1 +1,1 @@
-web: gunicorn -w 2 -t 120 --bind 0.0.0.0:$PORT wsgi:application
+web: gunicorn -w 2 -t 120 --keep-alive 5 --max-requests 1000 --bind 0.0.0.0:$PORT wsgi:applications
