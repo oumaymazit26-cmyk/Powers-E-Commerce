@@ -79,18 +79,24 @@ def clean_text(value):
     return value or None
 
 
-def parse_float(value, default=0.0):
+ddef parse_float(value, default=0.0):
     value = clean_text(value)
-    if value is None:
+    if value is None or value.lower() in ('none', ''):
         return default
-    return float(value.replace(',', '.'))
+    try:
+        return float(value.replace(',', '.'))
+    except ValueError:
+        return default
 
 
 def parse_int(value, default=0):
     value = clean_text(value)
-    if value is None:
+    if value is None or value.lower() in ('none', ''):
         return default
-    return int(float(value.replace(',', '.')))
+    try:
+        return int(float(value.replace(',', '.')))
+    except ValueError:
+        return default
 
 # ============================================================
 # GESTIONNAIRES D'ERREURS GLOBAUX — CRITIQUE POUR DEBUG
