@@ -48,7 +48,6 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'pool_recycle': 1800,
     'pool_pre_ping': True,
     'pool_timeout': 10,
-    'connect_args': {'connect_timeout': 10}
 }
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
