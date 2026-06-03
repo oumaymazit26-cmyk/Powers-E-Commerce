@@ -43,9 +43,12 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'powers-ecommerce-secret
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///powers_db.sqlite3')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-    'pool_size': 10,
-    'pool_recycle': 3600,
-    'pool_pre_ping': True
+    'pool_size': 3,
+    'max_overflow': 5,
+    'pool_recycle': 1800,
+    'pool_pre_ping': True,
+    'pool_timeout': 10,
+    'connect_args': {'connect_timeout': 10}
 }
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -230,7 +233,7 @@ def save_uploaded_file(file):
                 file.seek(0)  # Reset pour le fallback
 
                 # Upload via API HTTP Cloudinary
-                url = f"https://api.cloudinary.com/v1_1/{CLOUDINARY_CLOUD_NAME}/image/upload"
+                upload_url = f"https://api.cloudinary.com/v1_1/{CLOUDINARY_CLOUD_NAME}/image/upload"
 
                 timestamp = str(int(datetime.utcnow().timestamp()))
 
@@ -248,14 +251,14 @@ def save_uploaded_file(file):
                     ('timestamp', timestamp)
                 ]
 
-                response = requests.post(url, files=files, data=data, timeout=30)
+                response = requests.post(upload_url, files=files, data=data, timeout=15)
 
                 if response.status_code == 200:
                     result = response.json()
-                    url = result.get('secure_url')
-                    if url:
-                        safe_print(f"✅ Image Cloudinary: {url[:60]}...")
-                        return url
+                    secure_url = result.get('secure_url')
+                    if secure_url:
+                        safe_print(f"✅ Image Cloudinary: {secure_url[:60]}...")
+                        return secure_url
                 else:
                     safe_print(f"❌ Cloudinary API error: {response.status_code} - {response.text[:200]}")
             except Exception as e:
@@ -1630,12 +1633,6 @@ def create_product():
         traceback.print_exc()
         return jsonify({'success': False, 'message': str(e), 'error_type': type(e).__name__}), 400
 
-        return jsonify({'success': True, 'data': product.to_dict()}), 201
-    except Exception as e:
-        db.session.rollback()
-        traceback.print_exc()
-        return jsonify({'success': False, 'message': str(e), 'error_type': type(e).__name__}), 400
-
 
 @app.route('/api/products/<int:id>', methods=['PUT'])
 @require_auth
@@ -1729,12 +1726,6 @@ def update_product(id):
             },
             'published_to_wp': bool(wp_result)
         })
-
-        return jsonify({'success': True, 'data': product.to_dict()})
-    except Exception as e:
-        db.session.rollback()
-        traceback.print_exc()
-        return jsonify({'success': False, 'message': str(e), 'error_type': type(e).__name__}), 400
 
         return jsonify({'success': True, 'data': product.to_dict()})
     except Exception as e:

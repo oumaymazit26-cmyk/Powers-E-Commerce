@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-import_wp_products.py — Importe les produits WooCommerce → App Flask Railway
-Prêt à l'emploi, credentials déjà configurés.
+import_wp_products_v2.py — Importe les produits WooCommerce → App Flask Railway
+SANS modification de app.py — valeurs nettoyées côté client
 """
 
 import requests
@@ -30,6 +30,34 @@ def get_wcapi():
         version="wc/v3",
         timeout=20
     )
+
+
+def safe_value(value, default=""):
+    """Nettoie les valeurs None, 'None', null pour app.py"""
+    if value is None:
+        return default
+    value = str(value).strip()
+    if value.lower() in ('none', 'null', 'nan', ''):
+        return default
+    return value
+
+
+def safe_float_str(value):
+    """Retourne une chaîne float propre ou '0'"""
+    v = safe_value(value, "0")
+    try:
+        return str(float(v.replace(',', '.')))
+    except (ValueError, TypeError):
+        return "0"
+
+
+def safe_int_str(value):
+    """Retourne une chaîne int propre ou '0'"""
+    v = safe_value(value, "0")
+    try:
+        return str(int(float(v.replace(',', '.'))))
+    except (ValueError, TypeError):
+        return "0"
 
 
 def get_flask_categories():
@@ -92,7 +120,7 @@ def import_product(product, cat_mapping, existing):
     sku = product.get("sku", "")
     wp_id = product.get("id")
     name = product.get("name", "Sans nom")
-
+    
     if sku and sku in existing:
         print(f"  ⚠️  {name} — déjà importé (SKU: {sku})")
         return
@@ -119,6 +147,12 @@ def import_product(product, cat_mapping, existing):
     d = product.get("dimensions", {})
     dims = f"{d.get('length','')}x{d.get('width','')}x{d.get('height','')}".strip("x") or ""
 
+    # ─── VALEURS NUMÉRIQUES SÉCURISÉES (obligatoire car app.py ne gère pas None) ───
+    price = safe_float_str(product.get("regular_price"))
+    sale_price = safe_float_str(product.get("sale_price"))
+    stock_qty = safe_int_str(product.get("stock_quantity"))
+    weight = safe_float_str(product.get("weight"))
+
     # Images
     files = {}
     if product.get("images"):
@@ -131,24 +165,24 @@ def import_product(product, cat_mapping, existing):
                 files[f"gallery_{idx}"] = gi
 
     data = {
-        "name": product.get("name", ""),
-        "slug": product.get("slug", ""),
-        "sku": sku or f"WP-{wp_id}",
-        "description": product.get("description", ""),
-        "short_description": product.get("short_description", ""),
-        "price": str(product.get("regular_price") or 0),
-        "sale_price": str(product.get("sale_price") or 0),
-        "stock_quantity": str(product.get("stock_quantity", 0)),
+        "name": safe_value(product.get("name"), "Produit sans nom"),
+        "slug": safe_value(product.get("slug"), f"produit-{wp_id}"),
+        "sku": safe_value(sku, f"WP-{wp_id}"),
+        "description": safe_value(product.get("description")),
+        "short_description": safe_value(product.get("short_description")),
+        "price": price,
+        "sale_price": sale_price,
+        "stock_quantity": stock_qty,
         "stock_status": stock,
-        "weight": str(product.get("weight") or 0),
+        "weight": weight,
         "dimensions": dims,
         "category_id": category_id,
         "tags": ",".join([t["name"] for t in product.get("tags", [])]),
         "status": status,
-        "product_type": product.get("type", "simple"),
+        "product_type": safe_value(product.get("type"), "simple"),
         "featured": "true" if product.get("featured") else "false",
-        "meta_title": product.get("name", ""),
-        "meta_description": product.get("short_description", ""),
+        "meta_title": safe_value(product.get("name"), ""),
+        "meta_description": safe_value(product.get("short_description")),
         "publish_to_wp": "false",
     }
 
@@ -202,7 +236,7 @@ def main():
 
     cat_map = get_flask_categories()
     print(f"📂 {len(cat_map)//2} catégories dans Flask")
-
+    
     existing = get_existing_flask_products()
     print(f"📦 {len(existing)} produits déjà dans Flask")
 
@@ -210,21 +244,21 @@ def main():
     page = 1
     imported = 0
     while True:
-        print(f" Page {page} ---")
+        print(f"\n--- Page {page} ---")
         r = wcapi.get("products", params={"per_page": 100, "page": page})
         products = r.json() if r.status_code == 200 else []
         if not products:
             break
-
+        
         for p in products:
             import_product(p, cat_map, existing)
             imported += 1
-
+        
         if len(products) < 100:
             break
         page += 1
 
-  
+    print(f"\n🎉 Terminé ! {imported} produits traités.")
     print(f"Vérifie : curl -s {FLASK_URL}/api/products -H 'Authorization: Bearer {FLASK_TOKEN}'")
 
 
