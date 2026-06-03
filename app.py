@@ -315,7 +315,7 @@ def get_image_url(image_value):
     if image_value.startswith('http://') or image_value.startswith('https://'):
         return image_value
     base_url = get_public_base_url()
-    return f"{base_url}/uploads/{image_value}"
+    return f"{base_url}/static/uploads/{image_value}"
 
 
 def get_current_user():
@@ -1630,11 +1630,6 @@ def create_product():
         traceback.print_exc()
         return jsonify({'success': False, 'message': str(e), 'error_type': type(e).__name__}), 400
 
-        return jsonify({'success': True, 'data': product.to_dict()}), 201
-    except Exception as e:
-        db.session.rollback()
-        traceback.print_exc()
-        return jsonify({'success': False, 'message': str(e), 'error_type': type(e).__name__}), 400
 
 
 @app.route('/api/products/<int:id>', methods=['PUT'])
@@ -1736,11 +1731,6 @@ def update_product(id):
         traceback.print_exc()
         return jsonify({'success': False, 'message': str(e), 'error_type': type(e).__name__}), 400
 
-        return jsonify({'success': True, 'data': product.to_dict()})
-    except Exception as e:
-        db.session.rollback()
-        traceback.print_exc()
-        return jsonify({'success': False, 'message': str(e), 'error_type': type(e).__name__}), 400
 
 
 @app.route('/api/products/<int:id>/publish', methods=['POST'])
@@ -1975,6 +1965,10 @@ def get_stats():
 
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+@app.route('/static/uploads/<path:filename>')
+def uploaded_file_static(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 
