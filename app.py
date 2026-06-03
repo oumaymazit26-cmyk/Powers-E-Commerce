@@ -24,7 +24,6 @@ from email.mime.multipart import MIMEMultipart
 
 from woocommerce import API
 import requests
-import hashlib
 
 
 def safe_print(message):
@@ -224,6 +223,8 @@ def save_uploaded_file(file):
         # ─── Essayer Cloudinary d'abord (via API HTTP) ───
         if CLOUDINARY_CONFIGURED:
             try:
+                import base64
+                import hashlib
                 file.seek(0)
                 file_bytes = file.read()
                 file.seek(0)  # Reset pour le fallback
@@ -232,16 +233,20 @@ def save_uploaded_file(file):
                 url = f"https://api.cloudinary.com/v1_1/{CLOUDINARY_CLOUD_NAME}/image/upload"
 
                 timestamp = str(int(datetime.utcnow().timestamp()))
-                string_to_sign = f"timestamp={timestamp}{CLOUDINARY_API_SECRET}"
-                signature = hashlib.sha1(string_to_sign.encode()).hexdigest()
+
+                # Cloudinary signature: paramètres triés alphabétiquement + API_SECRET
+                # Ordre: folder, timestamp
+                params_to_sign = f"folder=powers/products&timestamp={timestamp}{CLOUDINARY_API_SECRET}"
+                signature = hashlib.sha1(params_to_sign.encode()).hexdigest()
 
                 files = {'file': ('image.jpg', file_bytes, file.content_type or 'image/jpeg')}
-                data = {
-                    'api_key': CLOUDINARY_API_KEY,
-                    'timestamp': timestamp,
-                    'signature': signature,
-                    'folder': 'powers/products'
-                }
+                # Les paramètres doivent aussi être dans l'ordre alphabétique
+                data = [
+                    ('api_key', CLOUDINARY_API_KEY),
+                    ('folder', 'powers/products'),
+                    ('signature', signature),
+                    ('timestamp', timestamp)
+                ]
 
                 response = requests.post(url, files=files, data=data, timeout=30)
 
@@ -283,7 +288,7 @@ def get_category_descendants(category_id):
 
 
 # ============================================================
-# CLOUDINARY CONFIG — Upload via API HTTP (pas besoin du module Python)
+# CLOUDINARY CONFIG — Upload via API HTTP (PAS de module Python requis)
 # ============================================================
 CLOUDINARY_CONFIGURED = False
 CLOUDINARY_CLOUD_NAME = os.environ.get('CLOUDINARY_CLOUD_NAME', '').strip()
