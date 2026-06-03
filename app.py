@@ -24,6 +24,15 @@ from email.mime.multipart import MIMEMultipart
 
 from woocommerce import API
 
+def safe_print(message):
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        encoding = sys.stdout.encoding or 'utf-8'
+        print(str(message).encode(encoding, errors='replace').decode(encoding))
+
+
+
 
 # ============================================================
 # CLOUDINARY CONFIG — Upload persistant sur cloud
@@ -48,16 +57,9 @@ try:
         missing = [k for k, v in {'CLOUDINARY_CLOUD_NAME': cloud_name, 'CLOUDINARY_API_KEY': api_key, 'CLOUDINARY_API_SECRET': api_secret}.items() if not v]
         safe_print(f"⚠️ Cloudinary non configuré — variables manquantes: {', '.join(missing)}")
 except ImportError:
-    safe_print("⚠️ cloudinary non installé (pip install cloudinary)")
+    print("⚠️ cloudinary non installé (pip install cloudinary)")
 
 
-
-def safe_print(message):
-    try:
-        print(message)
-    except UnicodeEncodeError:
-        encoding = sys.stdout.encoding or 'utf-8'
-        print(str(message).encode(encoding, errors='replace').decode(encoding))
 
 # ============================================================
 # FLASK APP CONFIG
