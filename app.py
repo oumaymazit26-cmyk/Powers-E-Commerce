@@ -25,6 +25,33 @@ from email.mime.multipart import MIMEMultipart
 from woocommerce import API
 
 
+# ============================================================
+# CLOUDINARY CONFIG — Upload persistant sur cloud
+# ============================================================
+CLOUDINARY_CONFIGURED = False
+try:
+    import cloudinary
+    import cloudinary.uploader
+    cloud_name = os.environ.get('CLOUDINARY_CLOUD_NAME', '').strip()
+    api_key = os.environ.get('CLOUDINARY_API_KEY', '').strip()
+    api_secret = os.environ.get('CLOUDINARY_API_SECRET', '').strip()
+    if cloud_name and api_key and api_secret:
+        cloudinary.config(
+            cloud_name=cloud_name,
+            api_key=api_key,
+            api_secret=api_secret,
+            secure=True
+        )
+        CLOUDINARY_CONFIGURED = True
+        safe_print(f"✅ Cloudinary configuré: {cloud_name}")
+    else:
+        missing = [k for k, v in {'CLOUDINARY_CLOUD_NAME': cloud_name, 'CLOUDINARY_API_KEY': api_key, 'CLOUDINARY_API_SECRET': api_secret}.items() if not v]
+        safe_print(f"⚠️ Cloudinary non configuré — variables manquantes: {', '.join(missing)}")
+except ImportError:
+    safe_print("⚠️ cloudinary non installé (pip install cloudinary)")
+
+
+
 def safe_print(message):
     try:
         print(message)
@@ -219,9 +246,29 @@ def allowed_file(filename):
 
 def save_uploaded_file(file):
     if file and allowed_file(file.filename):
+        # ─── Essayer Cloudinary d'abord ───
+        if CLOUDINARY_CONFIGURED:
+            try:
+                file.seek(0)
+                result = cloudinary.uploader.upload(
+                    file,
+                    folder="powers/products",
+                    resource_type="image",
+                    overwrite=False
+                )
+                url = result.get('secure_url')
+                if url:
+                    safe_print(f"✅ Image Cloudinary: {url[:60]}...")
+                    return url
+            except Exception as e:
+                safe_print(f"❌ Cloudinary upload failed: {e}")
+                # Fallback local ci-dessous
+
+        # ─── Fallback local (développement / sans Cloudinary) ───
         filename = secure_filename(file.filename)
         unique_filename = f"{uuid.uuid4().hex}_{filename}"
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+        file.seek(0)
         file.save(filepath)
         return unique_filename
     return None
@@ -244,6 +291,16 @@ def get_public_base_url():
     if BASE_IMAGE_URL:
         return BASE_IMAGE_URL.rstrip('/')
     return request.host_url.rstrip('/')
+
+
+def get_image_url(image_value):
+    """Retourne l'URL complète d'une image (Cloudinary ou locale)."""
+    if not image_value:
+        return None
+    if image_value.startswith('http://') or image_value.startswith('https://'):
+        return image_value
+    base_url = get_public_base_url()
+    return f"{base_url}/uploads/{image_value}"
 
 
 def get_current_user():
@@ -456,6 +513,7 @@ class Product(db.Model):
             'weight': self.weight,
             'dimensions': self.dimensions,
             'image': self.image,
+            'image_url': get_image_url(self.image),
             'gallery': self.gallery,
             'category_id': self.category_id,
             'category': self.category.to_dict() if self.category else None,
@@ -623,18 +681,22 @@ def sync_product_to_wordpress(product):
             except Exception as e:
                 safe_print(f"⚠️ Erreur catégorie WP: {e}")
 
-        base_url = get_public_base_url()
-        if base_url and product.image:
-            data["images"].append({"src": f"{base_url}/uploads/{product.image}", "position": 0})
+        # Images — Cloudinary URL directe ou locale
+        if product.image:
+            img_url = get_image_url(product.image)
+            if img_url:
+                data["images"].append({"src": img_url, "position": 0})
 
-        if base_url and product.gallery:
+        if product.gallery:
             for idx, img in enumerate(product.gallery.split(',')):
                 img = img.strip()
                 if img:
-                    data["images"].append({
-                        "src": f"{base_url}/uploads/{img}",
-                        "position": idx + 1
-                    })
+                    img_url = get_image_url(img)
+                    if img_url:
+                        data["images"].append({
+                            "src": img_url,
+                            "position": idx + 1
+                        })
 
         if existing_id:
             res = wcapi.put(f"products/{existing_id}", data)
