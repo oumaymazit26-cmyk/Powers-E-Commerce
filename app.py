@@ -33,8 +33,6 @@ def safe_print(message):
         encoding = sys.stdout.encoding or 'utf-8'
         print(str(message).encode(encoding, errors='replace').decode(encoding))
 
-import hashlib
-import base64
 # ============================================================
 # FLASK APP CONFIG
 # ============================================================
@@ -220,27 +218,13 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-
-# ============================================================
-# CLOUDINARY CONFIG — Upload via API HTTP (PAS de module Python requis)
-# ============================================================
-CLOUDINARY_CONFIGURED = False
-CLOUDINARY_CLOUD_NAME = os.environ.get('CLOUDINARY_CLOUD_NAME', '').strip()
-CLOUDINARY_API_KEY = os.environ.get('CLOUDINARY_API_KEY', '').strip()
-CLOUDINARY_API_SECRET = os.environ.get('CLOUDINARY_API_SECRET', '').strip()
-
-if CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET:
-    CLOUDINARY_CONFIGURED = True
-    safe_print(f"✅ Cloudinary configuré (API HTTP): {CLOUDINARY_CLOUD_NAME}")
-else:
-    missing = [k for k, v in {'CLOUDINARY_CLOUD_NAME': CLOUDINARY_CLOUD_NAME, 'CLOUDINARY_API_KEY': CLOUDINARY_API_KEY, 'CLOUDINARY_API_SECRET': CLOUDINARY_API_SECRET}.items() if not v]
-    safe_print(f"⚠️ Cloudinary non configuré — variables manquantes: {', '.join(missing)}")
-
 def save_uploaded_file(file):
     if file and allowed_file(file.filename):
         # ─── Essayer Cloudinary d'abord (via API HTTP) ───
         if CLOUDINARY_CONFIGURED:
             try:
+                import base64
+                import hashlib
                 file.seek(0)
                 file_bytes = file.read()
                 file.seek(0)  # Reset pour le fallback
@@ -251,15 +235,8 @@ def save_uploaded_file(file):
                 timestamp = str(int(datetime.utcnow().timestamp()))
 
                 # Cloudinary signature: paramètres triés alphabétiquement + API_SECRET
-                # Paramètres à signer: folder, timestamp
-                # Tous les paramètres envoyés (sauf file, api_key) doivent être dans la signature
-                params = {
-                    'folder': 'powers/products',
-                    'timestamp': timestamp
-                }
-                # Trier les paramètres par clé alphabétique
-                sorted_params = '&'.join([f"{k}={v}" for k, v in sorted(params.items())])
-                params_to_sign = f"{sorted_params}{CLOUDINARY_API_SECRET}"
+                # Ordre: folder, timestamp
+                params_to_sign = f"folder=powers/products&timestamp={timestamp}{CLOUDINARY_API_SECRET}"
                 signature = hashlib.sha1(params_to_sign.encode()).hexdigest()
 
                 files = {'file': ('image.jpg', file_bytes, file.content_type or 'image/jpeg')}
@@ -294,6 +271,7 @@ def save_uploaded_file(file):
         return unique_filename
     return None
 
+
 def build_category_tree():
     roots = Category.query.filter_by(parent_id=None).order_by(Category.sort_order).all()
     return [root.to_dict(include_children=True) for root in roots]
@@ -308,6 +286,302 @@ def get_category_descendants(category_id):
 
 
 
+
+# ============================================================
+# CLOUDINARY CONFIG — Upload via API HTTP (PAS de module Python requis)
+# ============================================================
+CLOUDINARY_CONFIGURED = False
+CLOUDINARY_CLOUD_NAME = os.environ.get('CLOUDINARY_CLOUD_NAME', '').strip()
+CLOUDINARY_API_KEY = os.environ.get('CLOUDINARY_API_KEY', '').strip()
+CLOUDINARY_API_SECRET = os.environ.get('CLOUDINARY_API_SECRET', '').strip()
+
+if CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET:
+    CLOUDINARY_CONFIGURED = True
+    safe_print(f"✅ Cloudinary configuré (API HTTP): {CLOUDINARY_CLOUD_NAME}")
+else:
+    missing = [k for k, v in {'CLOUDINARY_CLOUD_NAME': CLOUDINARY_CLOUD_NAME, 'CLOUDINARY_API_KEY': CLOUDINARY_API_KEY, 'CLOUDINARY_API_SECRET': CLOUDINARY_API_SECRET}.items() if not v]
+    safe_print(f"⚠️ Cloudinary non configuré — variables manquantes: {', '.join(missing)}")
+
+def get_public_base_url():
+    if BASE_IMAGE_URL:
+        return BASE_IMAGE_URL.rstrip('/')
+    return request.host_url.rstrip('/')
+
+
+def get_image_url(image_value):
+    """Retourne l'URL complète d'une image (Cloudinary ou locale)."""
+    if not image_value:
+        return None
+    if image_value.startswith('http://') or image_value.startswith('https://'):
+        return image_value
+    base_url = get_public_base_url()
+    return f"{base_url}/uploads/{image_value}"
+
+
+def get_current_user():
+    """Récupère l'utilisateur courant depuis le token Bearer"""
+    auth_header = request.headers.get('Authorization', '')
+
+    # DEBUG: loguer les headers (à retirer en production stable)
+    # print(f"🔍 Auth header reçu: {auth_header[:60] if auth_header else 'AUCUN'}")
+
+    if not auth_header.startswith('Bearer '):
+        return None
+    token = auth_header.split(' ')[1]
+    try:
+        user_id = int(token.split('-')[-1])
+        user = User.query.get(user_id)
+        return user
+    except (ValueError, IndexError):
+        return None
+
+
+def require_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        user = get_current_user()
+        if not user:
+            return jsonify({'success': False, 'message': 'Authentification requise'}), 401
+        if user.is_suspended:
+            return jsonify({'success': False, 'message': 'Compte suspendu. Contactez un administrateur.'}), 403
+        g.current_user = user
+        g.current_user_id = user.id
+        g.current_username = user.username
+        return f(*args, **kwargs)
+    return decorated
+
+
+def require_permission(permission):
+    def decorator(f):
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            user = get_current_user()
+            if not user:
+                return jsonify({'success': False, 'message': 'Authentification requise'}), 401
+            if user.is_suspended:
+                return jsonify({'success': False, 'message': 'Compte suspendu'}), 403
+            perms = ROLE_PERMISSIONS.get(user.role, [])
+            if '*' not in perms and permission not in perms:
+                return jsonify({'success': False, 'message': 'Permission refusée'}), 403
+            g.current_user = user
+            g.current_user_id = user.id
+            g.current_username = user.username
+            return f(*args, **kwargs)
+        return decorated
+    return decorator
+
+
+def log_action(action, entity_type=None, entity_id=None, details=None):
+    """Enregistre une action dans le journal d'audit"""
+    try:
+        user_id = getattr(g, 'current_user_id', None)
+        username = getattr(g, 'current_username', 'system')
+        log = AuditLog(
+            user_id=user_id,
+            username=username,
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            details=json.dumps(details, ensure_ascii=False) if details else None,
+            ip_address=request.remote_addr
+        )
+        db.session.add(log)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        safe_print(f"⚠️ Erreur audit log: {e}")
+
+
+# ==================== DATABASE MODELS ====================
+
+class User(db.Model):
+    __tablename__ = 'users'
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    role = db.Column(db.String(30), default='content_editor')
+    is_suspended = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_login = db.Column(db.DateTime, nullable=True)
+
+    def to_dict(self, include_sensitive=False):
+        data = {
+            'id': self.id,
+            'username': self.username,
+            'email': self.email,
+            'role': self.role,
+            'is_suspended': self.is_suspended,
+            'permissions': ROLE_PERMISSIONS.get(self.role, []),
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'last_login': self.last_login.isoformat() if self.last_login else None
+        }
+        if include_sensitive:
+            data['password_hash'] = self.password_hash
+        return data
+
+
+class AuditLog(db.Model):
+    __tablename__ = 'audit_logs'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+    username = db.Column(db.String(80), nullable=False)
+    action = db.Column(db.String(50), nullable=False)
+    entity_type = db.Column(db.String(50))
+    entity_id = db.Column(db.Integer)
+    details = db.Column(db.Text)
+    ip_address = db.Column(db.String(45))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'username': self.username,
+            'action': self.action,
+            'entity_type': self.entity_type,
+            'entity_id': self.entity_id,
+            'details': self.details,
+            'ip_address': self.ip_address,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+
+class Category(db.Model):
+    __tablename__ = 'categories'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    slug = db.Column(db.String(100), unique=True, nullable=False)
+    description = db.Column(db.Text)
+    parent_id = db.Column(db.Integer, db.ForeignKey('categories.id'), nullable=True)
+    level = db.Column(db.Integer, default=0)
+    sort_order = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    parent = db.relationship('Category', remote_side=[id], backref='children')
+    products = db.relationship('Product', backref='category', lazy='dynamic')
+
+    def to_dict(self, include_children=False):
+        data = {
+            'id': self.id,
+            'name': self.name,
+            'slug': self.slug,
+            'description': self.description,
+            'parent_id': self.parent_id,
+            'level': self.level,
+            'sort_order': self.sort_order,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+        if include_children:
+            data['children'] = [child.to_dict(include_children=True) for child in 
+                               sorted(self.children, key=lambda x: x.sort_order)]
+        return data
+
+
+class Product(db.Model):
+    __tablename__ = 'products'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(200), nullable=False)
+    slug = db.Column(db.String(200), unique=True, nullable=False)
+    sku = db.Column(db.String(100), unique=True)
+    description = db.Column(db.Text)
+    short_description = db.Column(db.String(500))
+    price = db.Column(db.Float, nullable=False, default=0.0)
+    sale_price = db.Column(db.Float, default=0.0)
+    cost_price = db.Column(db.Float, default=0.0)
+    stock_quantity = db.Column(db.Integer, default=0)
+    stock_status = db.Column(db.String(20), default='in_stock')
+    weight = db.Column(db.Float, default=0.0)
+    dimensions = db.Column(db.String(100))
+    image = db.Column(db.String(255))
+    gallery = db.Column(db.Text)
+    category_id = db.Column(db.Integer, db.ForeignKey('categories.id'))
+    tags = db.Column(db.String(255))
+    status = db.Column(db.String(20), default='draft')
+    product_type = db.Column(db.String(20), default='simple')
+    brand = db.Column(db.String(100))
+    attributes = db.Column(db.Text)
+    variations = db.Column(db.Text)
+    featured = db.Column(db.Boolean, default=False)
+    meta_title = db.Column(db.String(200))
+    meta_description = db.Column(db.String(500))
+    wp_sync_status = db.Column(db.String(20), default='local')
+    wp_product_id = db.Column(db.Integer, nullable=True)
+    scheduled_publish_at = db.Column(db.DateTime, nullable=True)
+    archived = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'slug': self.slug,
+            'sku': self.sku,
+            'description': self.description,
+            'short_description': self.short_description,
+            'price': self.price,
+            'sale_price': self.sale_price,
+            'cost_price': self.cost_price,
+            'stock_quantity': self.stock_quantity,
+            'stock_status': self.stock_status,
+            'weight': self.weight,
+            'dimensions': self.dimensions,
+            'image': self.image,
+            'image_url': get_image_url(self.image),
+            'gallery': self.gallery,
+            'category_id': self.category_id,
+            'category': self.category.to_dict() if self.category else None,
+            'tags': self.tags,
+            'status': self.status,
+            'product_type': self.product_type,
+            'brand': self.brand,
+            'attributes': self.attributes,
+            'variations': self.variations,
+            'featured': self.featured,
+            'meta_title': self.meta_title,
+            'meta_description': self.meta_description,
+            'wp_sync_status': self.wp_sync_status,
+            'wp_product_id': self.wp_product_id,
+            'scheduled_publish_at': self.scheduled_publish_at.isoformat() if self.scheduled_publish_at else None,
+            'archived': self.archived,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+
+
+class ContactMessage(db.Model):
+    __tablename__ = 'contact_messages'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    email = db.Column(db.String(120), nullable=False)
+    phone = db.Column(db.String(30))
+    subject = db.Column(db.String(200))
+    message = db.Column(db.Text, nullable=False)
+    product = db.Column(db.String(200))
+    quantity = db.Column(db.String(50))
+    service = db.Column(db.String(200))
+    message_type = db.Column(db.String(20), default='devis')
+    source = db.Column(db.String(50), default='website')
+    is_read = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'email': self.email,
+            'phone': self.phone,
+            'subject': self.subject,
+            'message': self.message,
+            'product': self.product,
+            'quantity': self.quantity,
+            'service': self.service,
+            'message_type': self.message_type,
+            'source': self.source,
+            'is_read': self.is_read,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
 
 # ============================================================
 # SYNCHRONISATION WOOCOMMERCE
@@ -1326,7 +1600,7 @@ def create_product():
         if product.category_id:
             product.category = Category.query.get(product.category_id)
 
-        # --- SYNC WP (isolé pour ne pas crasher la création du produit) ---
+               # --- SYNC WP (isolé pour ne pas crasher la création du produit) ---
         wp_result = None
         if publish_to_wp and status == 'active':
             can_publish = ('*' in ROLE_PERMISSIONS.get(g.current_user.role, []) or 
@@ -1355,6 +1629,13 @@ def create_product():
         db.session.rollback()
         traceback.print_exc()
         return jsonify({'success': False, 'message': str(e), 'error_type': type(e).__name__}), 400
+
+        return jsonify({'success': True, 'data': product.to_dict()}), 201
+    except Exception as e:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': str(e), 'error_type': type(e).__name__}), 400
+
 
 @app.route('/api/products/<int:id>', methods=['PUT'])
 @require_auth
@@ -1422,7 +1703,7 @@ def update_product(id):
         if product.category_id:
             product.category = Category.query.get(product.category_id)
 
-        # --- SYNC WP (isolé pour ne pas crasher la mise à jour du produit) ---
+          # --- SYNC WP (isolé pour ne pas crasher la mise à jour du produit) ---
         wp_result = None
         if publish_to_wp and product.status == 'active' and not product.archived:
             can_publish = ('*' in ROLE_PERMISSIONS.get(g.current_user.role, []) or 
@@ -1454,6 +1735,13 @@ def update_product(id):
         db.session.rollback()
         traceback.print_exc()
         return jsonify({'success': False, 'message': str(e), 'error_type': type(e).__name__}), 400
+
+        return jsonify({'success': True, 'data': product.to_dict()})
+    except Exception as e:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': str(e), 'error_type': type(e).__name__}), 400
+
 
 @app.route('/api/products/<int:id>/publish', methods=['POST'])
 @require_auth
