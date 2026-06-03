@@ -23,6 +23,9 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 from woocommerce import API
+import requests
+import hashlib
+
 
 def safe_print(message):
     try:
@@ -30,36 +33,6 @@ def safe_print(message):
     except UnicodeEncodeError:
         encoding = sys.stdout.encoding or 'utf-8'
         print(str(message).encode(encoding, errors='replace').decode(encoding))
-
-
-
-
-# ============================================================
-# CLOUDINARY CONFIG — Upload persistant sur cloud
-# ============================================================
-CLOUDINARY_CONFIGURED = False
-try:
-    import cloudinary
-    import cloudinary.uploader
-    cloud_name = os.environ.get('CLOUDINARY_CLOUD_NAME', '').strip()
-    api_key = os.environ.get('CLOUDINARY_API_KEY', '').strip()
-    api_secret = os.environ.get('CLOUDINARY_API_SECRET', '').strip()
-    if cloud_name and api_key and api_secret:
-        cloudinary.config(
-            cloud_name=cloud_name,
-            api_key=api_key,
-            api_secret=api_secret,
-            secure=True
-        )
-        CLOUDINARY_CONFIGURED = True
-        safe_print(f"✅ Cloudinary configuré: {cloud_name}")
-    else:
-        missing = [k for k, v in {'CLOUDINARY_CLOUD_NAME': cloud_name, 'CLOUDINARY_API_KEY': api_key, 'CLOUDINARY_API_SECRET': api_secret}.items() if not v]
-        safe_print(f"⚠️ Cloudinary non configuré — variables manquantes: {', '.join(missing)}")
-except ImportError:
-    print("⚠️ cloudinary non installé (pip install cloudinary)")
-
-
 
 # ============================================================
 # FLASK APP CONFIG
@@ -248,20 +221,38 @@ def allowed_file(filename):
 
 def save_uploaded_file(file):
     if file and allowed_file(file.filename):
-        # ─── Essayer Cloudinary d'abord ───
+        # ─── Essayer Cloudinary d'abord (via API HTTP) ───
         if CLOUDINARY_CONFIGURED:
             try:
                 file.seek(0)
-                result = cloudinary.uploader.upload(
-                    file,
-                    folder="powers/products",
-                    resource_type="image",
-                    overwrite=False
-                )
-                url = result.get('secure_url')
-                if url:
-                    safe_print(f"✅ Image Cloudinary: {url[:60]}...")
-                    return url
+                file_bytes = file.read()
+                file.seek(0)  # Reset pour le fallback
+
+                # Upload via API HTTP Cloudinary
+                url = f"https://api.cloudinary.com/v1_1/{CLOUDINARY_CLOUD_NAME}/image/upload"
+
+                timestamp = str(int(datetime.utcnow().timestamp()))
+                string_to_sign = f"timestamp={timestamp}{CLOUDINARY_API_SECRET}"
+                signature = hashlib.sha1(string_to_sign.encode()).hexdigest()
+
+                files = {'file': ('image.jpg', file_bytes, file.content_type or 'image/jpeg')}
+                data = {
+                    'api_key': CLOUDINARY_API_KEY,
+                    'timestamp': timestamp,
+                    'signature': signature,
+                    'folder': 'powers/products'
+                }
+
+                response = requests.post(url, files=files, data=data, timeout=30)
+
+                if response.status_code == 200:
+                    result = response.json()
+                    url = result.get('secure_url')
+                    if url:
+                        safe_print(f"✅ Image Cloudinary: {url[:60]}...")
+                        return url
+                else:
+                    safe_print(f"❌ Cloudinary API error: {response.status_code} - {response.text[:200]}")
             except Exception as e:
                 safe_print(f"❌ Cloudinary upload failed: {e}")
                 # Fallback local ci-dessous
@@ -288,6 +279,23 @@ def get_category_descendants(category_id):
         result.extend(get_category_descendants(child.id))
     return result
 
+
+
+
+# ============================================================
+# CLOUDINARY CONFIG — Upload via API HTTP (pas besoin du module Python)
+# ============================================================
+CLOUDINARY_CONFIGURED = False
+CLOUDINARY_CLOUD_NAME = os.environ.get('CLOUDINARY_CLOUD_NAME', '').strip()
+CLOUDINARY_API_KEY = os.environ.get('CLOUDINARY_API_KEY', '').strip()
+CLOUDINARY_API_SECRET = os.environ.get('CLOUDINARY_API_SECRET', '').strip()
+
+if CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET:
+    CLOUDINARY_CONFIGURED = True
+    safe_print(f"✅ Cloudinary configuré (API HTTP): {CLOUDINARY_CLOUD_NAME}")
+else:
+    missing = [k for k, v in {'CLOUDINARY_CLOUD_NAME': CLOUDINARY_CLOUD_NAME, 'CLOUDINARY_API_KEY': CLOUDINARY_API_KEY, 'CLOUDINARY_API_SECRET': CLOUDINARY_API_SECRET}.items() if not v]
+    safe_print(f"⚠️ Cloudinary non configuré — variables manquantes: {', '.join(missing)}")
 
 def get_public_base_url():
     if BASE_IMAGE_URL:
@@ -1555,7 +1563,7 @@ def create_product():
         product = Product(
             name=clean_text(data.get('name')) or '',
             slug=clean_text(data.get('slug')) or (clean_text(data.get('name')) or '').lower().replace(' ', '-'),
-            sku=clean_text(data.get('sku')),
+            sku=clean_text(data.get('sku')) or f'POWERS-{uuid.uuid4().hex[:8].upper()}',
             description=clean_text(data.get('description')),
             short_description=clean_text(data.get('short_description')),
             price=parse_float(data.get('price')),
