@@ -1548,6 +1548,11 @@ def create_product():
 
         return jsonify({'success': True, 'data': product.to_dict()}), 201
 
+    except Exception as e:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': str(e), 'error_type': type(e).__name__}), 400
+
         return jsonify({'success': True, 'data': product.to_dict()}), 201
     except Exception as e:
         db.session.rollback()
@@ -1621,9 +1626,9 @@ def update_product(id):
         if product.category_id:
             product.category = Category.query.get(product.category_id)
 
-               # --- SYNC WP (isolé pour ne pas crasher la création du produit) ---
+          # --- SYNC WP (isolé pour ne pas crasher la mise à jour du produit) ---
         wp_result = None
-        if publish_to_wp and status == 'active':
+        if publish_to_wp and product.status == 'active' and not product.archived:
             can_publish = ('*' in ROLE_PERMISSIONS.get(g.current_user.role, []) or 
                           'product:publish' in ROLE_PERMISSIONS.get(g.current_user.role, []))
             if can_publish:
@@ -1637,14 +1642,22 @@ def update_product(id):
                     except Exception as commit_err:
                         safe_print(f"❌ Impossible de sauver le statut failed: {commit_err}")
 
-        log_action('PRODUCT_CREATE', 'product', product.id, {
-            'name': product.name,
-            'status': product.status,
-            'published_to_wp': bool(wp_result),
-            'sku': product.sku
+        log_action('PRODUCT_UPDATE', 'product', product.id, {
+            'old': old_data,
+            'new': {
+                'name': product.name,
+                'price': product.price,
+                'stock_quantity': product.stock_quantity,
+                'status': product.status
+            },
+            'published_to_wp': bool(wp_result)
         })
 
-        return jsonify({'success': True, 'data': product.to_dict()}), 201
+        return jsonify({'success': True, 'data': product.to_dict()})
+    except Exception as e:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': str(e), 'error_type': type(e).__name__}), 400
 
         return jsonify({'success': True, 'data': product.to_dict()})
     except Exception as e:
